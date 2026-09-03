@@ -64,23 +64,53 @@ if (-not (Test-Path $SourceScript)) {
 Copy-Item -Path $SourceScript -Destination (Join-Path $InstallDir $ScriptName) -Force
 Write-Host "Copied $ScriptName -> $InstallDir" -ForegroundColor Green
 
-# Install psutil (optional but recommended)
-Write-Host "Installing dependencies (psutil)..." -ForegroundColor Yellow
-try {
-    & $PythonExe -m pip install --quiet psutil
-    Write-Host "psutil installed" -ForegroundColor Green
-} catch {
-    Write-Host "Warning: could not install psutil, fallback to tasklist will be used" -ForegroundColor Yellow
+# Copy exe if present (dist/PlayLimit.exe) - preferred launch method, no Python needed
+$ExeSource = Join-Path $PSScriptRoot "dist\PlayLimit.exe"
+$ExeDest = Join-Path $InstallDir "PlayLimit.exe"
+$HasExe = Test-Path $ExeSource
+if ($HasExe) {
+    Copy-Item -Path $ExeSource -Destination $ExeDest -Force
+    Write-Host "Copied PlayLimit.exe -> $InstallDir (will be auto-updated from GitHub on each start)" -ForegroundColor Green
+} else {
+    # Also check root PlayLimit.exe (if user downloaded exe directly)
+    $AltExe = Join-Path $PSScriptRoot "PlayLimit.exe"
+    if (Test-Path $AltExe) {
+        Copy-Item -Path $AltExe -Destination $ExeDest -Force
+        $HasExe = $true
+        Write-Host "Copied PlayLimit.exe -> $InstallDir" -ForegroundColor Green
+    }
+}
+
+# Install psutil (optional but recommended) - not needed if using exe
+if (-not $HasExe) {
+    Write-Host "Installing dependencies (psutil)..." -ForegroundColor Yellow
+    try {
+        & $PythonExe -m pip install --quiet psutil
+        Write-Host "psutil installed" -ForegroundColor Green
+    } catch {
+        Write-Host "Warning: could not install psutil, fallback to tasklist will be used" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Exe found, skipping Python dependency install (exe is standalone)" -ForegroundColor Green
 }
 
 # Create a VBS launcher to run hidden (no console window)
 $VbsPath = Join-Path $InstallDir "launch_hidden.vbs"
-$VbsContent = @"
+if ($HasExe) {
+    $VbsContent = @"
+Set WshShell = CreateObject("WScript.Shell")
+' Run exe hidden, no window
+WshShell.Run """$ExeDest""", 0, False
+Set WshShell = Nothing
+"@
+} else {
+    $VbsContent = @"
 Set WshShell = CreateObject("WScript.Shell")
 ' Run with pythonw hidden, no window
 WshShell.Run """$PythonW"" ""$InstallDir\$ScriptName""", 0, False
 Set WshShell = Nothing
 "@
+}
 Set-Content -Path $VbsPath -Value $VbsContent -Encoding ASCII
 Write-Host "Created hidden launcher: $VbsPath" -ForegroundColor Green
 
