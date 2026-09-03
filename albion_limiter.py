@@ -572,11 +572,17 @@ def console_thread():
             # Build status line
             status = "RUNNING" if running else "not running"
             # Color not needed, plain text
+            line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''}"
             try:
-                print(f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''}")
+                print(line)
                 sys.stdout.flush()
             except Exception:
-                log(f"[{ts}] Left {format_minutes(remaining)} / {format_minutes(limit)} | Albion {status}")
+                pass
+            # Also log so headless runs still show updates in limiter.log
+            try:
+                log(f"Console: {line}")
+            except Exception:
+                pass
         except Exception as e:
             try:
                 log(f"Console thread error: {e}")
