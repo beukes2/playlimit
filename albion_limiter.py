@@ -501,6 +501,89 @@ def hotkey_listener_thread():
         user32.UnregisterHotKey(None, HOTKEY_ID)
         log("Hotkey unregistered")
 
+def console_thread():
+    """Opens a console window (if hidden) and prints time left every 60s."""
+    # Try to allocate/show console when running as noconsole exe or pythonw
+    try:
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd == 0:
+            try:
+                kernel32.AllocConsole()
+                hwnd = kernel32.GetConsoleWindow()
+            except Exception:
+                pass
+        if hwnd:
+            try:
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            except Exception:
+                pass
+        # Reopen std handles to new console if needed
+        try:
+            import io
+            if hwnd != 0:
+                # Reattach stdout/stderr to CONOUT$
+                try:
+                    sys.stdout = open('CONOUT$', 'w', buffering=1, encoding='utf-8', errors='replace')
+                except Exception:
+                    pass
+                try:
+                    sys.stderr = open('CONOUT$', 'w', buffering=1, encoding='utf-8', errors='replace')
+                except Exception:
+                    pass
+                try:
+                    sys.stdin = open('CONIN$', 'r', encoding='utf-8')
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Print header
+    try:
+        print("=" * 60)
+        print(" PlayLimit - Albion Online Time Limiter")
+        print("=" * 60)
+        print(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
+        print(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
+        print(f" State: {STATE_FILE}")
+        print(f" Log:   {LOG_FILE}")
+        print("-" * 60)
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+    while True:
+        try:
+            with _state_lock:
+                s = load_state()
+                today = datetime.date.today()
+                limit = get_effective_limit_sec(today, s)
+                used = int(s.get("used_seconds", 0))
+                bonus = int(s.get("bonus_seconds", 0))
+                remaining = max(0, limit - used)
+                warned = s.get("warned", False)
+            running = is_albion_running()
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            day_type = "Weekend" if is_weekend(today) else "Weekday"
+            base = get_daily_limit_sec(today)
+            # Build status line
+            status = "RUNNING" if running else "not running"
+            # Color not needed, plain text
+            try:
+                print(f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''}")
+                sys.stdout.flush()
+            except Exception:
+                log(f"[{ts}] Left {format_minutes(remaining)} / {format_minutes(limit)} | Albion {status}")
+        except Exception as e:
+            try:
+                log(f"Console thread error: {e}")
+            except Exception:
+                pass
+        time.sleep(60)
+
 def show_message(title: str, text: str, style: int = 0x40):
     """Windows MessageBox (MB_OK | MB_ICONWARNING etc). Non-blocking via thread? We use blocking but short."""
     try:
@@ -624,6 +707,14 @@ def main_loop():
         log("Hotkey thread started")
     except Exception as e:
         log(f"Failed to start hotkey thread: {e}")
+
+    # Start console display (updates every 60s with time left)
+    try:
+        ct = threading.Thread(target=console_thread, daemon=True, name="ConsoleDisplay")
+        ct.start()
+        log("Console thread started (updates every 60s)")
+    except Exception as e:
+        log(f"Failed to start console thread: {e}")
 
     with _state_lock:
         state = load_state()
