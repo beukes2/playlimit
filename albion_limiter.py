@@ -55,6 +55,19 @@ DATA_DIR = get_data_dir()
 STATE_FILE = DATA_DIR / "state.json"
 LOG_FILE = DATA_DIR / "limiter.log"
 
+# ---------- AUTO-UPDATE CONFIG ----------
+AUTO_UPDATE_ENABLED = True
+REPO_URL = "https://github.com/beukes2/playlimit.git"
+REPO_BRANCH = "master"
+REPO_RAW_BASE = "https://raw.githubusercontent.com/beukes2/playlimit/master"
+GITHUB_API_COMMIT = "https://api.github.com/repos/beukes2/playlimit/commits/master"
+# Local cache for git clone (writable by standard users)
+UPDATE_CACHE_DIR = DATA_DIR / "repo"
+EXE_REPO_REL = Path("dist") / "PlayLimit.exe"
+EXE_LOCAL = DATA_DIR / "PlayLimit.exe"
+PY_REPO_NAME = "albion_limiter.py"
+UPDATE_TIMEOUT_SEC = 20
+
 # Try to import psutil optionally
 try:
     import psutil
@@ -125,6 +138,274 @@ def save_state(state: dict):
         STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except Exception as e:
         log(f"State save error: {e}")
+
+# ---------- AUTO-UPDATE HELPERS ----------
+def _sha256_file(p: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _files_equal(a: Path, b: Path) -> bool:
+    try:
+        if not a.exists() or not b.exists():
+            return False
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        return _sha256_file(a) == _sha256_file(b)
+    except Exception:
+        return False
+
+def _git_available() -> bool:
+    try:
+        subprocess.run(["git", "--version"], capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
+    except Exception:
+        return False
+
+def _try_git_update() -> bool:
+    """Clone or pull repo into UPDATE_CACHE_DIR. Returns True if updated/ok."""
+    if not _git_available():
+        return False
+    try:
+        UPDATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        git_dir = UPDATE_CACHE_DIR / ".git"
+        if not git_dir.exists():
+            # clone fresh
+            log(f"Updater: cloning {REPO_URL} -> {UPDATE_CACHE_DIR}")
+            if any(UPDATE_CACHE_DIR.iterdir()):
+                # clean non-git files
+                for child in UPDATE_CACHE_DIR.iterdir():
+                    if child.name == ".git":
+                        continue
+                    try:
+                        if child.is_dir():
+                            import shutil
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    except Exception:
+                        pass
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", REPO_BRANCH, REPO_URL, str(UPDATE_CACHE_DIR)],
+                capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if result.returncode != 0:
+                log(f"Updater: git clone failed: {result.stderr[:300]}")
+                return False
+            log("Updater: git clone ok")
+            return True
+        else:
+            log("Updater: git fetch + reset")
+            result = subprocess.run(
+                ["git", "-C", str(UPDATE_CACHE_DIR), "fetch", "origin", REPO_BRANCH],
+                capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if result.returncode != 0:
+                log(f"Updater: git fetch failed: {result.stderr[:300]}")
+                return False
+            result2 = subprocess.run(
+                ["git", "-C", str(UPDATE_CACHE_DIR), "reset", "--hard", f"origin/{REPO_BRANCH}"],
+                capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if result2.returncode != 0:
+                log(f"Updater: git reset failed: {result2.stderr[:300]}")
+                return False
+            log("Updater: git pull ok")
+            return True
+    except subprocess.TimeoutExpired:
+        log("Updater: git timeout")
+        return False
+    except Exception as e:
+        log(f"Updater: git error: {e}")
+        return False
+
+def _try_http_update() -> bool:
+    """Fallback: download latest py + exe via raw.githubusercontent. Returns True if any file updated."""
+    import urllib.request
+    import urllib.error
+    updated = False
+    try:
+        UPDATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        py_url = f"{REPO_RAW_BASE}/{PY_REPO_NAME}"
+        py_dest = UPDATE_CACHE_DIR / PY_REPO_NAME
+        try:
+            log(f"Updater: HTTP downloading {py_url}")
+            with urllib.request.urlopen(py_url, timeout=UPDATE_TIMEOUT_SEC) as resp:
+                data = resp.read()
+            if not py_dest.exists() or py_dest.read_bytes() != data:
+                py_dest.write_bytes(data)
+                log(f"Updater: updated {PY_REPO_NAME} via HTTP ({len(data)} bytes)")
+                updated = True
+            else:
+                log("Updater: py already latest via HTTP")
+        except Exception as e:
+            log(f"Updater: HTTP py failed: {e}")
+
+        exe_url = f"{REPO_RAW_BASE}/{EXE_REPO_REL.as_posix()}"
+        exe_dest = UPDATE_CACHE_DIR / EXE_REPO_REL
+        exe_dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            log(f"Updater: HTTP checking exe {exe_url}")
+            with urllib.request.urlopen(exe_url, timeout=UPDATE_TIMEOUT_SEC) as resp:
+                if resp.status == 200:
+                    data = resp.read()
+                    if len(data) < 1000:
+                        log("Updater: exe not found on remote (small file)")
+                    else:
+                        if not exe_dest.exists() or exe_dest.read_bytes() != data:
+                            exe_dest.write_bytes(data)
+                            log(f"Updater: updated exe via HTTP ({len(data)} bytes)")
+                            updated = True
+                        else:
+                            log("Updater: exe already latest via HTTP")
+                else:
+                    log(f"Updater: exe HTTP status {resp.status}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                log("Updater: no exe on remote yet (404)")
+            else:
+                log(f"Updater: HTTP exe error {e.code}: {e.reason}")
+        except Exception as e:
+            log(f"Updater: HTTP exe failed: {e}")
+    except Exception as e:
+        log(f"Updater: HTTP fallback error: {e}")
+    return updated
+
+def _launch_latest_exe_and_exit():
+    """If exe exists in cache/local, launch it and exit current process. Returns True if launched."""
+    try:
+        exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
+        exe_local = EXE_LOCAL
+        candidate = None
+        if exe_in_cache.exists() and exe_in_cache.stat().st_size > 1024 * 100:
+            if not exe_local.exists() or not _files_equal(exe_in_cache, exe_local):
+                try:
+                    exe_local.parent.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    if exe_local.exists():
+                        try:
+                            exe_local.unlink()
+                        except Exception:
+                            temp_exe = exe_local.with_name(f"PlayLimit_{int(time.time())}.exe")
+                            shutil.copy2(exe_in_cache, temp_exe)
+                            candidate = temp_exe
+                        else:
+                            shutil.copy2(exe_in_cache, exe_local)
+                            candidate = exe_local
+                    else:
+                        shutil.copy2(exe_in_cache, exe_local)
+                        candidate = exe_local
+                    if candidate is None:
+                        candidate = exe_local
+                    log(f"Updater: copied latest exe to {candidate}")
+                except Exception as e:
+                    log(f"Updater: copy exe failed: {e}")
+                    candidate = exe_in_cache
+            else:
+                candidate = exe_local
+
+        if candidate is None and exe_in_cache.exists():
+            candidate = exe_in_cache
+
+        if candidate is None or not candidate.exists():
+            log("Updater: no exe found, staying on Python")
+            return False
+
+        current = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else None
+        if current and current == candidate.resolve():
+            log("Updater: already running latest exe")
+            return False
+
+        if not getattr(sys, 'frozen', False):
+            log(f"Updater: launching exe {candidate} and exiting Python")
+            subprocess.Popen([str(candidate)], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
+            try:
+                _update_scheduled_task_to_exe(candidate)
+            except Exception as e:
+                log(f"Updater: task update failed: {e}")
+            sys.exit(0)
+        else:
+            if candidate.resolve() != current.resolve():
+                log(f"Updater: newer exe available {candidate} vs {current}, launching new and exiting")
+                subprocess.Popen([str(candidate)], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
+                sys.exit(0)
+        return False
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"Updater: launch failed: {e}")
+        import traceback
+        log(traceback.format_exc())
+        return False
+
+def _update_scheduled_task_to_exe(exe_path: Path):
+    """Try to update the scheduled task to launch exe directly (best-effort, needs admin)."""
+    try:
+        import subprocess
+        task_name = "AlbionLimiter"
+        result = subprocess.run(["schtasks", "/Query", "/TN", task_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode != 0:
+            return
+        ps_cmd = f"""
+$Action = New-ScheduledTaskAction -Execute '{exe_path}'
+$Task = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop
+$Task.Actions = @($Action)
+Set-ScheduledTask -TaskName '{task_name}' -Action $Action | Out-Null
+"""
+        subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+        log(f"Updater: scheduled task updated to {exe_path}")
+    except Exception as e:
+        log(f"Updater: task update error: {e}")
+
+def self_update():
+    """Called on startup. Pulls latest from git, syncs exe, and maybe relaunches."""
+    if not AUTO_UPDATE_ENABLED:
+        return
+    try:
+        log("=== Auto-update check ===")
+        ok = False
+        if _try_git_update():
+            ok = True
+            log("Updater: git update done")
+        else:
+            log("Updater: git failed or not available, trying HTTP")
+            if _try_http_update():
+                ok = True
+                log("Updater: HTTP update done")
+            else:
+                log("Updater: HTTP also failed or no update needed")
+
+        _launch_latest_exe_and_exit()
+
+        try:
+            running_py = Path(__file__).resolve()
+            cached_py = UPDATE_CACHE_DIR / PY_REPO_NAME
+            if cached_py.exists() and running_py.exists():
+                if not _files_equal(cached_py, running_py):
+                    try:
+                        import shutil
+                        shutil.copy2(cached_py, running_py)
+                        log(f"Updater: updated running py {running_py}")
+                    except PermissionError:
+                        log(f"Updater: no permission to update {running_py}, will use cached copy next time via exe")
+                    except Exception as e:
+                        log(f"Updater: py copy failed: {e}")
+        except Exception as e:
+            log(f"Updater: py sync error: {e}")
+
+        log("=== Auto-update done ===")
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"Updater: unexpected error: {e}")
+        import traceback
+        log(traceback.format_exc())
 
 def add_bonus_time(seconds: int = BONUS_STEP_SEC):
     """Add bonus time for today. Called by hotkey. Thread-safe via _state_lock."""
@@ -471,6 +752,17 @@ def main_loop():
             time.sleep(POLL_INTERVAL_SEC)
 
 if __name__ == "__main__":
+    # --- Auto-update BEFORE mutex (so new exe can start) ---
+    try:
+        self_update()
+    except SystemExit:
+        raise
+    except Exception as e:
+        try:
+            log(f"Startup update error (non-fatal): {e}")
+        except Exception:
+            pass
+
     # Ensure single instance
     try:
         import ctypes.wintypes

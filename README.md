@@ -21,11 +21,32 @@ Limits Albion Online playtime for kids:
 
 | File | Description |
 |------|-------------|
-| `albion_limiter.py` | Main service — polling + hotkey |
+| `albion_limiter.py` | Main service — polling + hotkey + auto-update |
+| `dist/PlayLimit.exe` | Latest compiled executable (auto-updated on launch) |
 | `install.ps1` | Installer (run as Administrator) |
 | `install.bat` | Batch wrapper for installer |
 | `uninstall.ps1` | Uninstaller (run as Administrator) |
 | `README.txt` | Plain-text docs |
+
+## Auto-Update
+
+On **every start**, the program checks GitHub and self-updates:
+
+1. Tries `git clone/pull` of `https://github.com/beukes2/playlimit` into `%ProgramData%\AlbionLimiter\repo` (writable cache)
+2. Fallback to HTTP `raw.githubusercontent.com` if `git` not available
+3. If `dist/PlayLimit.exe` on GitHub is newer, copies to `%ProgramData%\AlbionLimiter\PlayLimit.exe` and **re-launches the new exe** (Python exits)
+4. Next startups run the exe directly — `install.ps1`'s scheduled task is auto-patched to launch the exe
+
+Result: just `git push` a new `albion_limiter.py` + rebuilt `dist/PlayLimit.exe`, and all installs update on their next launch (no manual reinstall). If offline, it skips update and runs the cached version.
+
+Build a new exe after changes:
+```powershell
+py -m pip install pyinstaller psutil
+py -m PyInstaller --onefile --noconsole --name PlayLimit albion_limiter.py --distpath dist
+git add albion_limiter.py dist/PlayLimit.exe
+git commit -m "update + rebuild exe"
+git push
+```
 
 ## Installation
 

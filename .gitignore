@@ -7,8 +7,8 @@ __pycache__/
 venv/
 env/
 *.egg-info/
-dist/
 build/
+*.spec
 
 # Logs & state (local only, not repo)
 *.log
