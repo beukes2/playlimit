@@ -20,8 +20,8 @@ import threading
 from pathlib import Path
 
 # ---------- CONFIG ----------
-WEEKDAY_LIMIT_SEC = 50 * 60          # 50 minutes
-WEEKEND_LIMIT_SEC = 120 * 60         # 120 minutes
+WEEKDAY_LIMIT_SEC = 10 * 60          # 50 minutes
+WEEKEND_LIMIT_SEC = 10 * 60         # 120 minutes
 WARNING_BEFORE_SEC = 5 * 60          # 5 minute warning
 POLL_INTERVAL_SEC = 5                # check every 5 seconds
 GRACEFUL_CLOSE_TIMEOUT = 15          # seconds to wait after WM_CLOSE before kill
