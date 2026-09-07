@@ -19,6 +19,9 @@ import ctypes
 import threading
 from pathlib import Path
 
+__version__ = "1.0.0"
+APP_NAME = "PlayLimit"
+
 # ---------- CONFIG ----------
 WEEKDAY_LIMIT_SEC = 10 * 60          # 50 minutes
 WEEKEND_LIMIT_SEC = 10 * 60         # 120 minutes
@@ -651,62 +654,24 @@ def hotkey_listener_thread():
         log("Hotkeys unregistered")
 
 def console_thread():
-    """Opens a console window (if hidden) and prints time left every 60s."""
-    # Try to allocate/show console when running as noconsole exe or pythonw
+    """GUI app mode: no console window - just log time left every 60s (tray/window shows UI)."""
+    # App mode: do NOT allocate console - this is now a GUI app, not console
+    # Header is logged, not printed to console
     try:
-        kernel32 = ctypes.windll.kernel32
-        user32 = ctypes.windll.user32
-        hwnd = kernel32.GetConsoleWindow()
-        if hwnd == 0:
-            try:
-                kernel32.AllocConsole()
-                hwnd = kernel32.GetConsoleWindow()
-            except Exception:
-                pass
-        if hwnd:
-            try:
-                user32.ShowWindow(hwnd, 5)  # SW_SHOW
-            except Exception:
-                pass
-        # Reopen std handles to new console if needed
-        try:
-            import io
-            if hwnd != 0:
-                # Reattach stdout/stderr to CONOUT$
-                try:
-                    sys.stdout = open('CONOUT$', 'w', buffering=1, encoding='utf-8', errors='replace')
-                except Exception:
-                    pass
-                try:
-                    sys.stderr = open('CONOUT$', 'w', buffering=1, encoding='utf-8', errors='replace')
-                except Exception:
-                    pass
-                try:
-                    sys.stdin = open('CONIN$', 'r', encoding='utf-8')
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-    # Print header
-    try:
-        print("=" * 60)
-        print(" PlayLimit - Albion Online Time Limiter")
-        print("=" * 60)
-        print(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
-        print(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
-        print(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
+        log("=" * 60)
+        log(f" {APP_NAME} v{__version__} - Albion Online Time Limiter (GUI app)")
+        log("=" * 60)
+        log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
+        log(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
+        log(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
         if is_browser_block_exempt():
-            print(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
+            log(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
         else:
-            print(f" Browser block: {', '.join(BROWSER_PROCESSES)}")
-        print(f" State: {STATE_FILE}")
-        print(f" Log:   {LOG_FILE}")
-        print(f" Killable: Yes - Task Manager (as Admin) -> End Task on PlayLimit.exe")
-        print("-" * 60)
-        sys.stdout.flush()
+            log(f" Browser block: {', '.join(BROWSER_PROCESSES)}")
+        log(f" State: {STATE_FILE}")
+        log(f" Log:   {LOG_FILE}")
+        log(f" App: GUI (no console) - use tray icon or desktop icon to show time window")
+        log("-" * 60)
     except Exception:
         pass
 
@@ -793,8 +758,8 @@ def show_time_window():
         root = tk.Tk()
         # Keep reference
         globals()['_time_window'] = root
-        root.title("PlayLimit - Time Left")
-        root.geometry("360x220")
+        root.title(f"{APP_NAME} v{__version__} - Time Left")
+        root.geometry("360x240")
         root.resizable(False, False)
         try:
             root.attributes('-topmost', True)
@@ -819,7 +784,7 @@ def show_time_window():
         except Exception:
             pass
 
-        title = tk.Label(root, text="PlayLimit", font=("Segoe UI", 16, "bold"), bg="#1e1e2e", fg="white")
+        title = tk.Label(root, text=f"{APP_NAME} v{__version__}", font=("Segoe UI", 16, "bold"), bg="#1e1e2e", fg="white")
         title.pack(pady=(12, 4))
 
         time_label = tk.Label(root, text="--:--", font=("Segoe UI", 32, "bold"), bg="#1e1e2e", fg="#00ff88")
@@ -941,8 +906,8 @@ def tray_thread():
             item('Exit Tray', on_exit)
         )
         global _tray_icon
-        _tray_icon = pystray.Icon("PlayLimit", img, "PlayLimit - Double-click to show time", menu)
-        log("Tray icon started (pystray) - double-click to show time")
+        _tray_icon = pystray.Icon("PlayLimit", img, f"{APP_NAME} v{__version__} - Double-click to show time", menu)
+        log(f"Tray icon started (pystray) v{__version__} - double-click to show time")
         _tray_icon.run()
         return
     except Exception as e:
