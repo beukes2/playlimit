@@ -712,7 +712,7 @@ def hotkey_listener_thread():
                 elif msg.wParam == HOTKEY_ID_CLOSE:
                     log("Hotkey pressed: Ctrl+Alt+D - CLOSING PlayLimit")
                     try:
-                        show_message("PlayLimit", "PlayLimit is closing...\n\nTo restart, run PlayLimit again or reboot.", 0x40)
+                        show_warning_async("PlayLimit", "PlayLimit is closing...\n\nTo restart, run PlayLimit again or reboot.", 0x40)
                     except Exception:
                         pass
                     try:
@@ -727,7 +727,8 @@ def hotkey_listener_thread():
                     except Exception:
                         pass
                     log("PlayLimit closed via Ctrl+Alt+D - exiting")
-                    # Use os._exit to close immediately, bypassing mutex cleanup
+                    # Give popup a moment to show, then exit
+                    time.sleep(0.5)
                     os._exit(0)
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
