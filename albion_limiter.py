@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -642,7 +642,7 @@ def add_bonus_time(seconds: int = BONUS_STEP_SEC):
         return state
 
 def hotkey_listener_thread():
-    """Global hotkeys: Ctrl+Alt+T -> +15 min, Ctrl+Shift+D -> disable app."""
+    """Global hotkeys: Ctrl+Alt+T -> +15 min, Ctrl+Shift+D -> disable, Ctrl+Alt+D -> close app."""
     try:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
@@ -652,6 +652,7 @@ def hotkey_listener_thread():
 
     HOTKEY_ID_BONUS = 1
     HOTKEY_ID_DISABLE = 2
+    HOTKEY_ID_CLOSE = 3
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
@@ -671,7 +672,13 @@ def hotkey_listener_thread():
     else:
         log("Hotkey registered: Ctrl+Shift+D = DISABLE PlayLimit")
 
-    if not ok1 and not ok2:
+    ok3 = user32.RegisterHotKey(None, HOTKEY_ID_CLOSE, MOD_CONTROL | MOD_ALT, VK_D)
+    if not ok3:
+        log(f"Hotkey: RegisterHotKey Ctrl+Alt+D failed, error {kernel32.GetLastError()}")
+    else:
+        log("Hotkey registered: Ctrl+Alt+D = CLOSE PlayLimit")
+
+    if not ok1 and not ok2 and not ok3:
         return
 
     try:
@@ -702,6 +709,26 @@ def hotkey_listener_thread():
                         disable_app()
                     except Exception as e:
                         log(f"Disable hotkey error: {e}")
+                elif msg.wParam == HOTKEY_ID_CLOSE:
+                    log("Hotkey pressed: Ctrl+Alt+D - CLOSING PlayLimit")
+                    try:
+                        show_message("PlayLimit", "PlayLimit is closing...\n\nTo restart, run PlayLimit again or reboot.", 0x40)
+                    except Exception:
+                        pass
+                    try:
+                        # Disable task so it doesn't auto-restart immediately, then exit
+                        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/DISABLE"], capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+                    except Exception:
+                        pass
+                    # Also create disabled flag so next start knows it was closed intentionally
+                    try:
+                        DISABLE_FLAG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        DISABLE_FLAG_FILE.write_text("closed via Ctrl+Alt+D at " + datetime.datetime.now().isoformat(), encoding="utf-8")
+                    except Exception:
+                        pass
+                    log("PlayLimit closed via Ctrl+Alt+D - exiting")
+                    # Use os._exit to close immediately, bypassing mutex cleanup
+                    os._exit(0)
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
@@ -709,6 +736,8 @@ def hotkey_listener_thread():
             user32.UnregisterHotKey(None, HOTKEY_ID_BONUS)
         if ok2:
             user32.UnregisterHotKey(None, HOTKEY_ID_DISABLE)
+        if 'ok3' in locals() and ok3:
+            user32.UnregisterHotKey(None, HOTKEY_ID_CLOSE)
         log("Hotkeys unregistered")
 
 def console_thread():
@@ -722,6 +751,7 @@ def console_thread():
         log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
         log(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
         log(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
+        log(f" Hotkey: Ctrl+Alt+D = CLOSE PlayLimit (exit app)")
         if is_browser_block_exempt():
             log(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
         else:
