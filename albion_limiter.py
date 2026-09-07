@@ -853,7 +853,28 @@ def show_time_window():
                 except Exception:
                     pass
 
-        tk.Button(btn_frame, text="Close", command=root.destroy, bg="#2d2d44", fg="white", relief="flat", padx=12, width=10).pack(pady=2)
+        # No Close button - kids would click it; window is not closable via X or taskbar either
+        # Keep an empty frame for spacing
+        tk.Label(btn_frame, text=" ", bg="#1e1e2e").pack()
+
+        # Make window NOT closable via X or taskbar (Alt+F4, system menu)
+        try:
+            root.protocol("WM_DELETE_WINDOW", lambda: None)
+            # Also disable system menu Close via Win32
+            try:
+                hwnd = ctypes.windll.user32.FindWindowW(None, root.title())
+                if hwnd == 0:
+                    # Try GetParent for Tk window
+                    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+                if hwnd:
+                    hMenu = ctypes.windll.user32.GetSystemMenu(hwnd, 0)
+                    if hMenu:
+                        ctypes.windll.user32.DeleteMenu(hMenu, 0xF060, 0x0)  # SC_CLOSE
+                        ctypes.windll.user32.DrawMenuBar(hwnd)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         refresh()
         # Center on screen
@@ -861,7 +882,7 @@ def show_time_window():
             root.update_idletasks()
             x = (root.winfo_screenwidth() // 2) - (360 // 2)
             y = (root.winfo_screenheight() // 2) - (220 // 2)
-            root.geometry(f"360x220+{x}+{y}")
+            root.geometry(f"360x240+{x}+{y}")
         except Exception:
             pass
         root.mainloop()
@@ -901,9 +922,7 @@ def tray_thread():
             # We keep tray running; this just hides icon
 
         menu = pystray.Menu(
-            item('Show Time Left', on_show, default=True),
-            pystray.Menu.SEPARATOR,
-            item('Exit Tray', on_exit)
+            item('Show Time Left', on_show, default=True)
         )
         global _tray_icon
         _tray_icon = pystray.Icon("PlayLimit", img, f"{APP_NAME} v{__version__} - Double-click to show time", menu)
