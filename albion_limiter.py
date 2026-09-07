@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.4"
+__version__ = "1.2.5"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -410,30 +410,81 @@ def _try_http_update() -> bool:
 def _launch_latest_exe_and_exit():
     """If exe exists in cache/local, launch it and exit current process. Returns True if launched."""
     try:
+        # Cleanup old timestamped temp exes from previous buggy versions (keep at most 1 latest)
+        try:
+            for p in DATA_DIR.glob("PlayLimit_*.exe"):
+                try:
+                    # Keep only the newest one from last 5 minutes, delete older
+                    if time.time() - p.stat().st_mtime > 300:
+                        p.unlink(missing_ok=True)
+                        log(f"Updater: cleaned old temp exe {p.name}")
+                except Exception:
+                    pass
+            # If too many temp exes, clean all
+            temps = list(DATA_DIR.glob("PlayLimit_*.exe"))
+            if len(temps) > 5:
+                for p in temps:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                log(f"Updater: cleaned {len(temps)} temp exes (storm)")
+        except Exception:
+            pass
+
         exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
         exe_local = EXE_LOCAL
         candidate = None
+
+        # If we are already running the cached exe (frozen), check if we are latest - if so, no need to update local
+        current = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else None
+        if current and exe_in_cache.exists():
+            try:
+                if _files_equal(current, exe_in_cache):
+                    log("Updater: current exe is already latest (matches cache) - no update needed")
+                    return False
+            except Exception:
+                pass
+
         if exe_in_cache.exists() and exe_in_cache.stat().st_size > 1024 * 100:
-            if not exe_local.exists() or not _files_equal(exe_in_cache, exe_local):
+            # Check if local needs update
+            needs_update = False
+            try:
+                if not exe_local.exists():
+                    needs_update = True
+                elif not _files_equal(exe_in_cache, exe_local):
+                    # Size mismatch of 7 bytes is likely just rebuild timestamp, check version instead?
+                    # Consider equal if size diff < 1KB and version same? For now check hash
+                    needs_update = True
+                else:
+                    needs_update = False
+            except Exception:
+                needs_update = True
+
+            if needs_update:
                 try:
                     exe_local.parent.mkdir(parents=True, exist_ok=True)
                     import shutil
+                    # Try direct copy to local - if locked, don't create timestamped storm, just use cache
                     if exe_local.exists():
                         try:
+                            # Try to unlink, if locked, fallback to launching cache directly
                             exe_local.unlink()
-                        except Exception:
-                            temp_exe = exe_local.with_name(f"PlayLimit_{int(time.time())}.exe")
-                            shutil.copy2(exe_in_cache, temp_exe)
-                            candidate = temp_exe
-                        else:
                             shutil.copy2(exe_in_cache, exe_local)
                             candidate = exe_local
+                            log(f"Updater: updated local exe {candidate} (was locked before, now ok)")
+                        except Exception as e:
+                            # Locked - don't create timestamped exe, just launch cache directly
+                            if "WinError 32" in str(e) or "being used" in str(e).lower():
+                                log(f"Updater: local exe locked ({e}), launching cache directly without temp copy")
+                                candidate = exe_in_cache
+                            else:
+                                log(f"Updater: copy failed ({e}), launching cache")
+                                candidate = exe_in_cache
                     else:
                         shutil.copy2(exe_in_cache, exe_local)
                         candidate = exe_local
-                    if candidate is None:
-                        candidate = exe_local
-                    log(f"Updater: copied latest exe to {candidate}")
+                        log(f"Updater: copied latest exe to {candidate}")
                 except Exception as e:
                     log(f"Updater: copy exe failed: {e}")
                     candidate = exe_in_cache
@@ -447,8 +498,7 @@ def _launch_latest_exe_and_exit():
             log("Updater: no exe found, staying on Python")
             return False
 
-        current = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else None
-        if current and current == candidate.resolve():
+        if current and candidate.resolve() == current.resolve():
             log("Updater: already running latest exe")
             return False
 
