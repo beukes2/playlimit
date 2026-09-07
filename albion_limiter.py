@@ -36,6 +36,27 @@ TARGET_PROCESSES = [
     "Albion-Online.exe",  # duplicate for safety
 ]
 
+# Browser processes to block (kids not allowed to open any browser)
+BROWSER_PROCESSES = [
+    "chrome.exe",
+    "chrome_proxy.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "opera_gx.exe",
+    "vivaldi.exe",
+    "iexplore.exe",
+    "chromium.exe",
+    "whale.exe",
+    "arc.exe",
+    "browser.exe",
+]
+
+# App control
+APP_DISABLED = False  # set True by Ctrl+Shift+D hotkey
+DISABLE_FLAG_FILE = None  # set after DATA_DIR known
+
 # State / log locations
 def get_data_dir():
     # Prefer ProgramData (persists across users, survives if kids delete AppData)
@@ -54,6 +75,7 @@ def get_data_dir():
 DATA_DIR = get_data_dir()
 STATE_FILE = DATA_DIR / "state.json"
 LOG_FILE = DATA_DIR / "limiter.log"
+DISABLE_FLAG_FILE = DATA_DIR / "disabled.flag"
 
 # ---------- AUTO-UPDATE CONFIG ----------
 AUTO_UPDATE_ENABLED = True
@@ -82,6 +104,88 @@ def log(msg: str):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+    except Exception:
+        pass
+
+def is_disabled() -> bool:
+    global APP_DISABLED
+    if APP_DISABLED:
+        return True
+    try:
+        if DISABLE_FLAG_FILE and DISABLE_FLAG_FILE.exists():
+            return True
+    except Exception:
+        pass
+    return False
+
+def disable_app():
+    global APP_DISABLED
+    APP_DISABLED = True
+    try:
+        DISABLE_FLAG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DISABLE_FLAG_FILE.write_text(datetime.datetime.now().isoformat(), encoding="utf-8")
+    except Exception:
+        pass
+    log("=== PlayLimit DISABLED by Ctrl+Shift+D ===")
+    # Try to disable scheduled task so it doesn't restart
+    try:
+        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/DISABLE"], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+        log("Scheduled task AlbionLimiter disabled")
+    except Exception as e:
+        log(f"Disable task failed: {e}")
+    try:
+        show_warning_async("PlayLimit - Disabled", "PlayLimit has been DISABLED.\n\nBrowsers and Albion are now allowed.\n\nTo re-enable, delete:\n" + str(DISABLE_FLAG_FILE) + "\nand restart the app or reboot.", style=0x40)
+    except Exception:
+        pass
+    # Don't exit immediately - let main loop see disabled flag and skip blocking; console will show DISABLED
+
+def enable_app():
+    global APP_DISABLED
+    APP_DISABLED = False
+    try:
+        if DISABLE_FLAG_FILE.exists():
+            DISABLE_FLAG_FILE.unlink()
+    except Exception:
+        pass
+    try:
+        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/ENABLE"], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception:
+        pass
+    log("PlayLimit re-enabled")
+
+def protect_process():
+    """Make console/app not closable by kids: disable close button, ignore Ctrl+C/close, and try to deny terminate."""
+    # Ignore console close / logoff / shutdown
+    try:
+        # Handler that returns 1 = ignore
+        handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+        def handler(ctrl):
+            if ctrl in (0, 2, 5, 6):  # CTRL_C=0, CTRL_BREAK=1, CLOSE=2, LOGOFF=5, SHUTDOWN=6
+                log(f"Blocked close attempt ctrl={ctrl}")
+                return 1
+            return 0
+        # Keep reference alive
+        global _console_handler_ref
+        _console_handler_ref = handler_type(handler)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler_ref, 1)
+    except Exception as e:
+        log(f"protect: SetConsoleCtrlHandler failed: {e}")
+    # Disable close button
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            hMenu = ctypes.windll.user32.GetSystemMenu(hwnd, 0)
+            if hMenu:
+                # SC_CLOSE = 0xF060, MF_BYCOMMAND = 0
+                ctypes.windll.user32.DeleteMenu(hMenu, 0xF060, 0x0)
+                ctypes.windll.user32.EnableMenuItem(hMenu, 0xF060, 0x1)  # MF_GRAYED=1
+                ctypes.windll.user32.DrawMenuBar(hwnd)
+    except Exception as e:
+        log(f"protect: DeleteMenu failed: {e}")
+    # Try to set file ACLs so kids can't delete exe (best-effort, may need admin)
+    try:
+        # Deny terminate for Users on current process via ACL is complex; fallback to making task SYSTEM
+        pass
     except Exception:
         pass
 
@@ -454,7 +558,7 @@ def add_bonus_time(seconds: int = BONUS_STEP_SEC):
         return state
 
 def hotkey_listener_thread():
-    """Global hotkey Ctrl+Alt+T -> +15 min. Uses RegisterHotKey (no extra deps)."""
+    """Global hotkeys: Ctrl+Alt+T -> +15 min, Ctrl+Shift+D -> disable app."""
     try:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
@@ -462,19 +566,29 @@ def hotkey_listener_thread():
         log(f"Hotkey: ctypes not available: {e}")
         return
 
-    HOTKEY_ID = 1
+    HOTKEY_ID_BONUS = 1
+    HOTKEY_ID_DISABLE = 2
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
+    MOD_SHIFT = 0x0004
     VK_T = 0x54  # 'T'
+    VK_D = 0x44  # 'D'
     WM_HOTKEY = 0x0312
 
-    # Register hotkey on this thread's message queue
-    if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_T):
-        err = kernel32.GetLastError()
-        log(f"Hotkey: RegisterHotKey Ctrl+Alt+T failed, error {err} (maybe already registered)")
-        return
+    ok1 = user32.RegisterHotKey(None, HOTKEY_ID_BONUS, MOD_CONTROL | MOD_ALT, VK_T)
+    if not ok1:
+        log(f"Hotkey: RegisterHotKey Ctrl+Alt+T failed, error {kernel32.GetLastError()}")
+    else:
+        log("Hotkey registered: Ctrl+Alt+T = +15 minutes for today (resets tomorrow)")
 
-    log("Hotkey registered: Ctrl+Alt+T = +15 minutes for today (resets tomorrow)")
+    ok2 = user32.RegisterHotKey(None, HOTKEY_ID_DISABLE, MOD_CONTROL | MOD_SHIFT, VK_D)
+    if not ok2:
+        log(f"Hotkey: RegisterHotKey Ctrl+Shift+D failed, error {kernel32.GetLastError()}")
+    else:
+        log("Hotkey registered: Ctrl+Shift+D = DISABLE PlayLimit")
+
+    if not ok1 and not ok2:
+        return
 
     try:
         msg = ctypes.wintypes.MSG()
@@ -486,20 +600,32 @@ def hotkey_listener_thread():
                 log(f"Hotkey: GetMessage error {kernel32.GetLastError()}")
                 time.sleep(0.5)
                 continue
-            if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
-                log("Hotkey pressed: Ctrl+Alt+T")
-                try:
-                    add_bonus_time(BONUS_STEP_SEC)
-                except Exception as e:
-                    log(f"Hotkey handler error: {e}")
-                    import traceback
-                    log(traceback.format_exc())
-            # Needed to dispatch? For None hwnd, just continue
+            if msg.message == WM_HOTKEY:
+                if msg.wParam == HOTKEY_ID_BONUS:
+                    log("Hotkey pressed: Ctrl+Alt+T")
+                    try:
+                        if is_disabled():
+                            log("Bonus ignored - app is DISABLED")
+                        else:
+                            add_bonus_time(BONUS_STEP_SEC)
+                    except Exception as e:
+                        log(f"Hotkey handler error: {e}")
+                        import traceback
+                        log(traceback.format_exc())
+                elif msg.wParam == HOTKEY_ID_DISABLE:
+                    log("Hotkey pressed: Ctrl+Shift+D - DISABLING")
+                    try:
+                        disable_app()
+                    except Exception as e:
+                        log(f"Disable hotkey error: {e}")
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
-        user32.UnregisterHotKey(None, HOTKEY_ID)
-        log("Hotkey unregistered")
+        if ok1:
+            user32.UnregisterHotKey(None, HOTKEY_ID_BONUS)
+        if ok2:
+            user32.UnregisterHotKey(None, HOTKEY_ID_DISABLE)
+        log("Hotkeys unregistered")
 
 def console_thread():
     """Opens a console window (if hidden) and prints time left every 60s."""
@@ -548,6 +674,8 @@ def console_thread():
         print("=" * 60)
         print(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
         print(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
+        print(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
+        print(f" Browser block: {', '.join(BROWSER_PROCESSES)}")
         print(f" State: {STATE_FILE}")
         print(f" Log:   {LOG_FILE}")
         print("-" * 60)
@@ -572,7 +700,10 @@ def console_thread():
             # Build status line
             status = "RUNNING" if running else "not running"
             # Color not needed, plain text
-            line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''}"
+            if is_disabled():
+                line = f"[{ts}] *** DISABLED *** | PlayLimit is OFF | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} | Browser block OFF | Press reboot or delete {DISABLE_FLAG_FILE} to re-enable"
+            else:
+                line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''} | Browser BLOCKED"
             try:
                 print(line)
                 sys.stdout.flush()
@@ -644,8 +775,88 @@ def is_albion_running() -> bool:
         log(f"tasklist check failed: {e}")
         return False
 
+def is_browser_running() -> bool:
+    """Check if any browser process is running."""
+    if is_disabled():
+        return False
+    names_lower = [n.lower() for n in BROWSER_PROCESSES]
+    if HAS_PSUTIL:
+        try:
+            for p in psutil.process_iter(['name']):
+                try:
+                    n = (p.info.get('name') or "").lower()
+                    if n in names_lower:
+                        return True
+                except Exception:
+                    continue
+            return False
+        except Exception as e:
+            log(f"browser psutil error: {e}")
+    try:
+        out = subprocess.check_output('tasklist /FO CSV /NH', shell=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        low = out.lower()
+        for n in names_lower:
+            if n.lower() in low:
+                return True
+        return False
+    except Exception:
+        return False
+
+def kill_browsers():
+    """Close any browser process immediately."""
+    if is_disabled():
+        return False
+    killed = False
+    names_lower = [n.lower() for n in BROWSER_PROCESSES]
+    if HAS_PSUTIL:
+        targets = []
+        for p in psutil.process_iter(['name', 'pid']):
+            try:
+                n = (p.info.get('name') or "").lower()
+                if n in names_lower:
+                    targets.append(p)
+            except Exception:
+                continue
+        for p in targets:
+            try:
+                p.terminate()
+                killed = True
+                log(f"Browser block: Terminate {p.info.get('name')} PID {p.pid}")
+            except Exception as e:
+                log(f"Browser terminate failed PID {p.pid}: {e}")
+        if targets:
+            gone, alive = psutil.wait_procs(targets, timeout=5)
+            for p in alive:
+                try:
+                    p.kill()
+                    log(f"Browser block: Kill PID {p.pid}")
+                except Exception:
+                    pass
+                killed = True
+        if killed:
+            try:
+                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nAsk a parent to press Ctrl+Shift+D to disable.", style=0x10)
+            except Exception:
+                pass
+        return killed
+    else:
+        try:
+            for name in BROWSER_PROCESSES:
+                result = subprocess.run(f'taskkill /F /IM "{name}" /T', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                if result.returncode == 0:
+                    killed = True
+                    log(f"Browser block: taskkill {name}")
+            if killed:
+                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.", style=0x10)
+            return killed
+        except Exception as e:
+            log(f"browser taskkill failed: {e}")
+            return False
+
 def kill_albion():
     """Try graceful close via WM_CLOSE, then terminate."""
+    if is_disabled():
+        return False
     killed = False
     names_lower = [n.lower() for n in TARGET_PROCESSES]
 
@@ -699,10 +910,30 @@ def format_minutes(sec: int) -> str:
     return f"{m} min {s} sec"
 
 def main_loop():
+    # Check persisted disabled flag
+    global APP_DISABLED
+    try:
+        if DISABLE_FLAG_FILE.exists():
+            APP_DISABLED = True
+            log(f"Startup: DISABLED flag found at {DISABLE_FLAG_FILE} - blocking is OFF (Ctrl+Shift+D to disable, delete flag to re-enable)")
+    except Exception:
+        pass
+
+    # Make not closable
+    try:
+        protect_process()
+        log("Protect: anti-close enabled (console close blocked, close button disabled)")
+    except Exception as e:
+        log(f"Protect failed: {e}")
+
     log(f"=== AlbionLimiter started ===")
     log(f"Data dir: {DATA_DIR}")
     log(f"State file: {STATE_FILE}")
-    log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Alt+T")
+    if is_disabled():
+        log("STATUS: DISABLED - all limits and browser block are OFF")
+    else:
+        log(f"STATUS: ACTIVE - Browser block ON ({', '.join(BROWSER_PROCESSES)})")
+    log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Alt+T, Disable: Ctrl+Shift+D")
     log(f"Watching: {', '.join(TARGET_PROCESSES)}")
     log(f"psutil available: {HAS_PSUTIL}")
 
@@ -748,6 +979,20 @@ def main_loop():
 
                 limit = get_effective_limit_sec(today, state)
             warning_at = limit - WARNING_BEFORE_SEC
+
+            # If disabled, skip all blocking
+            if is_disabled():
+                # Still sleep and continue; console will show DISABLED
+                time.sleep(POLL_INTERVAL_SEC)
+                continue
+
+            # Browser block: close any browser immediately (always, when not disabled)
+            # Do this every poll so browsers cannot stay open
+            try:
+                if is_browser_running():
+                    kill_browsers()
+            except Exception as e:
+                log(f"Browser check error: {e}")
 
             running = is_albion_running()
 

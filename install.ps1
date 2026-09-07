@@ -114,7 +114,7 @@ Set WshShell = Nothing
 Set-Content -Path $VbsPath -Value $VbsContent -Encoding ASCII
 Write-Host "Created hidden launcher: $VbsPath" -ForegroundColor Green
 
-# Create Scheduled Task - runs at logon for all users + at startup, hidden
+# Create Scheduled Task - runs at logon for all users + at startup, hidden + NOT CLOSABLE
 Write-Host "Creating Scheduled Task '$TaskName'..." -ForegroundColor Yellow
 
 # Remove old task if exists
@@ -123,27 +123,38 @@ try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction 
 $Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$VbsPath`""
 $Trigger1 = New-ScheduledTaskTrigger -AtLogOn
 $Trigger2 = New-ScheduledTaskTrigger -AtStartup
-# Run every 5 minutes as backup if killed (optional)
+# Run every 5 minutes as backup if killed (watchdog) + every 1 min restart
 $Trigger3 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
 
-# Settings: allow run on battery, don't stop, restart on failure
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1)
+# Settings: allow run on battery, don't stop, restart on failure - makes it NOT closable (auto-restart)
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 $Settings.Hidden = $true
 $Settings.DisallowStartIfOnBatteries = $false
+$Settings.AllowHardTerminate = $false  # Prevent user from stopping via Task Scheduler UI
 
-# Principal: run as Users group, highest? Use Interactive token for MessageBox visibility
-# Use current user with highest privileges
-$Principal = New-ScheduledTaskPrincipal -GroupId "Users" -RunLevel Highest
-
+# Try SYSTEM first (kids as standard users cannot kill SYSTEM processes)
+$Created = $false
 try {
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $Principal -Description "Limits Albion Online playtime: 50min weekdays, 2h weekends" | Out-Null
-    Write-Host "Scheduled Task created!" -ForegroundColor Green
+    $PrincipalSys = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $PrincipalSys -Description "PlayLimit: 10min limit, browser block, not closable (SYSTEM) - Ctrl+Shift+D to disable" | Out-Null
+    Write-Host "Scheduled Task created as SYSTEM (kids cannot kill - Access Denied)!" -ForegroundColor Green
+    $Created = $true
 } catch {
-    Write-Host "Failed to create task with Users principal, trying current user..." -ForegroundColor Yellow
-    $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $Principal2 = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Highest
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "Limits Albion Online playtime: 50min weekdays, 2h weekends" | Out-Null
-    Write-Host "Scheduled Task created (user-specific)!" -ForegroundColor Green
+    Write-Host "SYSTEM task failed ($_), trying Users group..." -ForegroundColor Yellow
+}
+
+if (-not $Created) {
+    $Principal = New-ScheduledTaskPrincipal -GroupId "Users" -RunLevel Highest
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $Principal -Description "PlayLimit: 10min limit, browser block - Ctrl+Shift+D to disable" | Out-Null
+        Write-Host "Scheduled Task created as Users (restart on kill + console close blocked)!" -ForegroundColor Green
+    } catch {
+        Write-Host "Failed to create task with Users principal, trying current user..." -ForegroundColor Yellow
+        $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $Principal2 = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Highest
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "PlayLimit: 10min limit, browser block" | Out-Null
+        Write-Host "Scheduled Task created (user-specific)!" -ForegroundColor Green
+    }
 }
 
 # Also add to Startup folder as fallback (for non-admin installs)
@@ -186,14 +197,18 @@ try {
 
 Write-Host ""
 Write-Host "=== INSTALL COMPLETE ===" -ForegroundColor Cyan
-Write-Host "Limits: 50 minutes on weekdays (Mon-Fri), 2 hours on weekends (Sat-Sun)" -ForegroundColor White
-Write-Host "Warning: 5 minutes before limit" -ForegroundColor White
-Write-Host "Behavior: closes game + blocks reopen until midnight" -ForegroundColor White
+Write-Host "Limits: 10 minutes (currently test, edit albion_limiter.py for 50/120)" -ForegroundColor White
+Write-Host "Warning: 5 minutes before limit (popup)" -ForegroundColor White
+Write-Host "Behavior: closes Albion + blocks reopen until midnight, browser block ON (chrome/edge/firefox/brave/opera)" -ForegroundColor White
+Write-Host "Hotkeys: Ctrl+Alt+T = +15 min today, Ctrl+Shift+D = DISABLE PlayLimit" -ForegroundColor White
+Write-Host "Console: shows time left every 60s (cannot be closed by kids - close button disabled)" -ForegroundColor White
+Write-Host "Protection: Task restarts if killed (1 min), runs as SYSTEM if possible - kids need admin to stop" -ForegroundColor White
 Write-Host ""
 Write-Host "Data file: $DataDir\state.json" -ForegroundColor Gray
 Write-Host "Log file:  $DataDir\limiter.log" -ForegroundColor Gray
 Write-Host "To check status: Get-Content `"$DataDir\state.json`"" -ForegroundColor Gray
-Write-Host "To test: try opening Albion Online and check the log" -ForegroundColor Gray
+Write-Host "To test browser block: try opening Chrome - it will be closed" -ForegroundColor Gray
+Write-Host "To disable: Press Ctrl+Shift+D (creates $DataDir\disabled.flag) or Run: schtasks /Change /TN AlbionLimiter /Disable" -ForegroundColor Gray
 Write-Host ""
 Write-Host "To uninstall, run uninstall.ps1 as Administrator" -ForegroundColor Yellow
 Write-Host ""

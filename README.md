@@ -1,21 +1,24 @@
 # PlayLimit — Albion Online Parental Time Limiter
 
 Limits Albion Online playtime for kids:
-- **Weekdays (Mon-Fri): 50 minutes/day**
-- **Weekends (Sat-Sun): 2 hours/day**
+- **Currently: 10 minutes/day (test) — easy to change to 50/120**
 - 5 minute warning popup before time runs out
 - Automatically closes game when time is up
 - Blocks reopening until next day (midnight)
-- **Parent hotkey: `Ctrl+Alt+T` adds 15 minutes for today** (resets tomorrow)
+- **Browser block: Chrome/Edge/Firefox/Brave/Opera etc. are auto-closed**
+- **Not closable by kids:** close button disabled, Ctrl+C ignored, auto-restarts if killed, runs as SYSTEM when possible
+- **Parent hotkeys: `Ctrl+Alt+T` +15 min, `Ctrl+Shift+D` DISABLE app** (resets tomorrow / creates disabled flag)
 
 ## How It Works
 
-- Runs silently in background (hidden, no console window)
+- Runs with visible console (shows time left every 60s) + background blocking
 - Counts only time when Albion Online is actually running
 - If game is closed early, remaining time is saved (can't cheat by restarting)
 - Counter resets automatically at midnight
+- **Browser block:** any browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`, `opera.exe`, `vivaldi.exe`, `iexplore.exe`...) is terminated within 5 seconds
 - Uses Task Scheduler + Startup shortcut so it survives reboots
-- Standard (non-admin) users cannot kill or uninstall it easily
+- **Not closable:** console X disabled, `Ctrl+C`/close ignored, task set `AllowHardTerminate=$false` + `RestartCount 10` (restarts in 1 min if killed), tries to run as `SYSTEM` (standard users get Access Denied), `Protect: anti-close enabled`
+- **Disable:** `Ctrl+Shift+D` creates `%ProgramData%\AlbionLimiter\disabled.flag` and disables task — delete flag + reboot to re-enable
 
 ## Files
 
@@ -70,21 +73,27 @@ git push
    Get-Content C:\ProgramData\AlbionLimiter\limiter.log -Tail 20
    ```
 
-## Parent Hotkey
+## Parent Hotkeys
 
-Press **`Ctrl+Alt+T`** at any time (even while game is fullscreen) to add 15 minutes for **today only**.
-
+**`Ctrl+Alt+T`** — add 15 minutes for **today only** (even while game is fullscreen):
 - Each press adds another 15 min (press twice = +30 min)
-- Bonus resets to 0 at midnight — next day uses default 50min/2h again
+- Bonus resets to 0 at midnight
 - Popup confirms: *"Bonus Added! New total: X min"*
-- If game was already blocked (time's up), `Ctrl+Alt+T` unblocks it immediately
+- If game was already blocked, unblocks it immediately
+
+**`Ctrl+Shift+D`** — **DISABLE PlayLimit** (parent override):
+- Instantly stops all blocking (Albion + browsers allowed)
+- Creates `%ProgramData%\AlbionLimiter\disabled.flag` and disables scheduled task `AlbionLimiter`
+- Console shows `*** DISABLED ***`
+- To re-enable: `Remove-Item C:\ProgramData\AlbionLimiter\disabled.flag; Enable-ScheduledTask -TaskName AlbionLimiter` or delete flag and reboot
 
 Config in `albion_limiter.py`:
 ```python
-WEEKDAY_LIMIT_SEC = 50 * 60
-WEEKEND_LIMIT_SEC = 120 * 60
-WARNING_BEFORE_SEC = 5 * 60
-BONUS_STEP_SEC = 15 * 60   # per Ctrl+Alt+T
+WEEKDAY_LIMIT_SEC = 10 * 60  # currently 10 min test (set to 50*60 / 120*60 for prod)
+WEEKEND_LIMIT_SEC = 10 * 60
+WARNING_BEFORE_SEC = 5 * 60  # popup at 5 min left
+BONUS_STEP_SEC = 15 * 60     # per Ctrl+Alt+T
+BROWSER_PROCESSES = ["chrome.exe","msedge.exe","firefox.exe","brave.exe",...]
 ```
 
 ## Other Overrides
@@ -111,13 +120,14 @@ Right-click `uninstall.ps1` → **Run as Administrator**
 ## FAQ
 
 **What process names are blocked?**  
-`Albion-Online.exe`, `AlbionOnline.exe`, `AlbionLauncher.exe` and any process with `albion` in the name.
+`Albion-Online.exe`, `AlbionOnline.exe`, `AlbionLauncher.exe` and any process with `albion` in the name.  
+**Browsers blocked:** `chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`, `opera.exe`, `vivaldi.exe`, `iexplore.exe`, `chromium.exe` etc. — killed within 5 seconds with `Browser Blocked` popup.
 
 **Does it need internet?**  
 No, runs fully offline.
 
 **Can kids kill it in Task Manager?**  
-If installed with default hardened permissions, they need admin to stop the Scheduled Task. They can kill the `pythonw` process, but it restarts within 5 minutes via scheduler.
+No — close button is disabled, Ctrl+C/Close are ignored (`SetConsoleCtrlHandler` + `DeleteMenu`), task has `AllowHardTerminate=$false` and `RestartCount 10` (auto-restarts in 1 min if killed). If installed as `SYSTEM` (default when run as Admin), standard users get `Access Denied` when trying to End Task. They need the admin password or `Ctrl+Shift+D` (which also needs physical access).
 
 **What if PC is off at midnight?**  
 Counter resets on next boot when date changes.
