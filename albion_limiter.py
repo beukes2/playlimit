@@ -1167,6 +1167,19 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start tray thread: {e}")
 
+    # Auto-show little time window 2 sec after startup so you SEE the app (GUI, not console)
+    try:
+        def _auto_show():
+            time.sleep(2)
+            try:
+                show_time_window()
+            except Exception:
+                pass
+        threading.Thread(target=_auto_show, daemon=True).start()
+        log("Auto-show time window scheduled (2s)")
+    except Exception:
+        pass
+
     with _state_lock:
         state = load_state()
         save_state(state)

@@ -132,24 +132,25 @@ $Settings.Hidden = $true
 $Settings.DisallowStartIfOnBatteries = $false
 $Settings.AllowHardTerminate = $true  # Allow parent to kill via Task Manager / Task Scheduler (kids as standard users still get Access Denied for SYSTEM task)
 
-# Try SYSTEM first (kids as standard users cannot kill SYSTEM processes)
+# Try Users first (visible tray + desktop icon, killable via Task Manager as Admin, kids as standard still get restart)
 $Created = $false
 try {
-    $PrincipalSys = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $PrincipalSys -Description "PlayLimit: 10min limit, browser block, not closable (SYSTEM) - Ctrl+Shift+D to disable" | Out-Null
-    Write-Host "Scheduled Task created as SYSTEM (kids cannot kill - Access Denied)!" -ForegroundColor Green
+    $Principal = New-ScheduledTaskPrincipal -GroupId "Users" -RunLevel Highest
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $Principal -Description "PlayLimit v1.0.0 GUI - 10min limit, browser block, tray visible - Ctrl+Shift+D to disable" | Out-Null
+    Write-Host "Scheduled Task created as Users (visible tray, restart on kill)!" -ForegroundColor Green
     $Created = $true
 } catch {
-    Write-Host "SYSTEM task failed ($_), trying Users group..." -ForegroundColor Yellow
+    Write-Host "Users task failed ($_), trying SYSTEM (hidden, not visible)..." -ForegroundColor Yellow
 }
 
 if (-not $Created) {
-    $Principal = New-ScheduledTaskPrincipal -GroupId "Users" -RunLevel Highest
     try {
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $Principal -Description "PlayLimit: 10min limit, browser block - Ctrl+Shift+D to disable" | Out-Null
-        Write-Host "Scheduled Task created as Users (restart on kill + console close blocked)!" -ForegroundColor Green
+        $PrincipalSys = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $PrincipalSys -Description "PlayLimit: 10min limit, browser block, not closable (SYSTEM) - Ctrl+Shift+D to disable" | Out-Null
+        Write-Host "Scheduled Task created as SYSTEM (kids cannot kill - Access Denied)!" -ForegroundColor Green
+        $Created = $true
     } catch {
-        Write-Host "Failed to create task with Users principal, trying current user..." -ForegroundColor Yellow
+        Write-Host "SYSTEM task failed, trying current user..." -ForegroundColor Yellow
         $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $Principal2 = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Highest
         Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "PlayLimit: 10min limit, browser block" | Out-Null
