@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.6"
+__version__ = "1.2.7"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -134,33 +134,17 @@ def log(msg: str):
         pass
 
 def is_disabled() -> bool:
-    global APP_DISABLED
-    if APP_DISABLED:
-        return True
-    try:
-        if DISABLE_FLAG_FILE and DISABLE_FLAG_FILE.exists():
-            return True
-    except Exception:
-        pass
-    return False
+    # No persistent flag - disabled is in-memory only for this session, always starts enabled
+    return APP_DISABLED
 
 def disable_app():
     global APP_DISABLED
     APP_DISABLED = True
+    log("=== PlayLimit DISABLED by Ctrl+Shift+D (session only - will re-enable on next startup) ===")
+    # Don't create disabled.flag anymore - no persistence
+    # Don't disable scheduled task - app will start enabled next boot
     try:
-        DISABLE_FLAG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        DISABLE_FLAG_FILE.write_text(datetime.datetime.now().isoformat(), encoding="utf-8")
-    except Exception:
-        pass
-    log("=== PlayLimit DISABLED by Ctrl+Shift+D ===")
-    # Try to disable scheduled task so it doesn't restart
-    try:
-        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/DISABLE"], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-        log("Scheduled task AlbionLimiter disabled")
-    except Exception as e:
-        log(f"Disable task failed: {e}")
-    try:
-        show_warning_async("PlayLimit - Disabled", "PlayLimit has been DISABLED.\n\nBrowsers and Albion are now allowed.\n\nTo re-enable, delete:\n" + str(DISABLE_FLAG_FILE) + "\nand restart the app or reboot.", style=0x40)
+        show_warning_async("PlayLimit - Disabled", "PlayLimit has been DISABLED for this session.\n\nBrowsers and Albion are now allowed until next restart.\n\nApp will re-enable on next startup.", style=0x40)
     except Exception:
         pass
     # Don't exit immediately - let main loop see disabled flag and skip blocking; console will show DISABLED
@@ -1430,26 +1414,16 @@ def format_minutes(sec: int) -> str:
     return f"{m} min {s} sec"
 
 def main_loop():
-    # Check persisted disabled flag - auto-clean stale close flags (v1.2.2 Ctrl+Alt+D created flag that should not persist)
+    # No persistent disabled flag - always start enabled, clean any stale flag left from older versions
     global APP_DISABLED
+    APP_DISABLED = False
     try:
-        if DISABLE_FLAG_FILE.exists():
+        if DISABLE_FLAG_FILE and DISABLE_FLAG_FILE.exists():
             try:
-                content = DISABLE_FLAG_FILE.read_text(encoding="utf-8", errors="ignore").lower()
-                # If flag was created via Ctrl+Alt+D close (should not cause persistent disabled), clean it
-                if "closed via ctrl+alt+d" in content:
-                    log(f"Startup: cleaning stale close flag at {DISABLE_FLAG_FILE} (was: {content.strip()[:60]}) - starting ENABLED")
-                    try:
-                        DISABLE_FLAG_FILE.unlink()
-                    except Exception:
-                        pass
-                    APP_DISABLED = False
-                else:
-                    APP_DISABLED = True
-                    log(f"Startup: DISABLED flag found at {DISABLE_FLAG_FILE} - blocking is OFF (Ctrl+Shift+D to disable, delete flag to re-enable)")
-            except Exception:
-                APP_DISABLED = True
-                log(f"Startup: DISABLED flag found at {DISABLE_FLAG_FILE} - blocking is OFF (Ctrl+Shift+D to disable, delete flag to re-enable)")
+                DISABLE_FLAG_FILE.unlink()
+                log(f"Startup: removed stale disabled.flag at {DISABLE_FLAG_FILE} - starting ENABLED (no persistent disable)")
+            except Exception as e:
+                log(f"Startup: could not remove stale disabled.flag: {e} - starting ENABLED anyway")
     except Exception:
         pass
 
