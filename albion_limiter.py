@@ -750,6 +750,239 @@ def console_thread():
                 pass
         time.sleep(60)
 
+# ---------- TRAY ICON + LITTLE TIME WINDOW ----------
+_tray_icon = None
+
+def _create_tray_image():
+    """Create 64x64 icon for tray (blue with PL)."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new('RGBA', (64, 64), (30, 144, 255, 255))
+        draw = ImageDraw.Draw(img)
+        # white circle
+        draw.ellipse([4, 4, 60, 60], fill=(255, 255, 255, 255), outline=(0, 0, 0, 255), width=2)
+        draw.ellipse([8, 8, 56, 56], fill=(30, 144, 255, 255))
+        try:
+            font = ImageFont.truetype("segoeui.ttf", 28)
+        except Exception:
+            font = ImageFont.load_default()
+        # Draw PL
+        draw.text((12, 14), "PL", fill=(255, 255, 255, 255), font=font)
+        return img
+    except Exception:
+        try:
+            from PIL import Image
+            return Image.new('RGBA', (64, 64), (30, 144, 255, 255))
+        except Exception:
+            return None
+
+def show_time_window():
+    """Little screen showing remaining time - Tkinter popup, updates every second."""
+    try:
+        import tkinter as tk
+        # If window already exists, bring to front
+        global _time_window
+        try:
+            if '_time_window' in globals() and _time_window and _time_window.winfo_exists():
+                _time_window.lift()
+                _time_window.attributes('-topmost', True)
+                return
+        except Exception:
+            pass
+
+        root = tk.Tk()
+        # Keep reference
+        globals()['_time_window'] = root
+        root.title("PlayLimit - Time Left")
+        root.geometry("360x220")
+        root.resizable(False, False)
+        try:
+            root.attributes('-topmost', True)
+        except Exception:
+            pass
+        # Icon if available
+        try:
+            icon = _create_tray_image()
+            if icon:
+                # Convert PIL to Tk PhotoImage via temp file
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(suffix=".ico", delete=False)
+                icon.save(tmp.name, format="ICO", sizes=[(64, 64)])
+                tmp.close()
+                root.iconbitmap(tmp.name)
+        except Exception:
+            pass
+
+        # Style
+        try:
+            root.configure(bg="#1e1e2e")
+        except Exception:
+            pass
+
+        title = tk.Label(root, text="PlayLimit", font=("Segoe UI", 16, "bold"), bg="#1e1e2e", fg="white")
+        title.pack(pady=(12, 4))
+
+        time_label = tk.Label(root, text="--:--", font=("Segoe UI", 32, "bold"), bg="#1e1e2e", fg="#00ff88")
+        time_label.pack()
+
+        detail_label = tk.Label(root, text="", font=("Segoe UI", 9), bg="#1e1e2e", fg="#cccccc", justify="center")
+        detail_label.pack(pady=4)
+
+        progress = tk.Canvas(root, width=320, height=14, bg="#2d2d44", highlightthickness=0)
+        progress.pack(pady=6)
+        bar = progress.create_rectangle(0, 0, 0, 14, fill="#00ff88", outline="")
+
+        btn_frame = tk.Frame(root, bg="#1e1e2e")
+        btn_frame.pack(pady=6)
+
+        def refresh():
+            try:
+                if is_disabled():
+                    time_label.config(text="DISABLED", fg="#ff5555")
+                    detail_label.config(text="PlayLimit is OFF\nBrowsers and Albion allowed")
+                    progress.coords(bar, 0, 0, 0, 14)
+                    progress.itemconfig(bar, fill="#ff5555")
+                elif is_browser_block_exempt():
+                    with _state_lock:
+                        s = load_state()
+                        today = datetime.date.today()
+                        limit = get_effective_limit_sec(today, s)
+                        used = int(s.get("used_seconds", 0))
+                        bonus = int(s.get("bonus_seconds", 0))
+                        remaining = max(0, limit - used)
+                    # Show but browser exempt
+                    mins, secs = divmod(remaining, 60)
+                    time_label.config(text=f"{mins:02d}:{secs:02d}", fg="#ffcc00")
+                    detail_label.config(text=f"Browser block OFF (exempt)\nUsed {format_minutes(used)} / {format_minutes(limit)} (+{bonus//60} bonus)")
+                    pct = (used / limit) if limit else 0
+                    w = int(320 * min(pct, 1.0))
+                    progress.coords(bar, 0, 0, w, 14)
+                    progress.itemconfig(bar, fill="#ffcc00")
+                else:
+                    with _state_lock:
+                        s = load_state()
+                        today = datetime.date.today()
+                        limit = get_effective_limit_sec(today, s)
+                        used = int(s.get("used_seconds", 0))
+                        bonus = int(s.get("bonus_seconds", 0))
+                        remaining = max(0, limit - used)
+                    mins, secs = divmod(remaining, 60)
+                    time_label.config(text=f"{mins:02d}:{secs:02d}", fg="#00ff88" if remaining > 300 else "#ff5555")
+                    day_type = "Weekend" if is_weekend() else "Weekday"
+                    detail_label.config(text=f"{day_type} {limit//60} min (base {get_daily_limit_sec()//60}+{bonus//60} bonus)\nUsed {format_minutes(used)} | Left {format_minutes(remaining)}")
+                    pct = (used / limit) if limit else 0
+                    w = int(320 * min(pct, 1.0))
+                    progress.coords(bar, 0, 0, w, 14)
+                    progress.itemconfig(bar, fill="#ff5555" if remaining <= 300 else "#00ff88")
+                # schedule next
+                if root.winfo_exists():
+                    root.after(1000, refresh)
+            except Exception as e:
+                try:
+                    log(f"Time window refresh error: {e}")
+                except Exception:
+                    pass
+                try:
+                    if root.winfo_exists():
+                        root.after(1000, refresh)
+                except Exception:
+                    pass
+
+        def on_add():
+            try:
+                add_bonus_time(BONUS_STEP_SEC)
+            except Exception:
+                pass
+
+        def on_disable():
+            try:
+                disable_app()
+                root.after(500, refresh)
+            except Exception:
+                pass
+
+        tk.Button(btn_frame, text="+15 min", command=on_add, bg="#3a3a5c", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Disable", command=on_disable, bg="#5c1a1a", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Close", command=root.destroy, bg="#2d2d44", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
+
+        refresh()
+        # Center on screen
+        try:
+            root.update_idletasks()
+            x = (root.winfo_screenwidth() // 2) - (360 // 2)
+            y = (root.winfo_screenheight() // 2) - (220 // 2)
+            root.geometry(f"360x220+{x}+{y}")
+        except Exception:
+            pass
+        root.mainloop()
+    except Exception as e:
+        try:
+            log(f"show_time_window error: {e}")
+            # Fallback to MessageBox with time
+            with _state_lock:
+                s = load_state()
+                limit = get_effective_limit_sec(datetime.date.today(), s)
+                used = int(s.get("used_seconds", 0))
+                remaining = max(0, limit - used)
+            show_message("PlayLimit - Time Left", f"Used: {format_minutes(used)}\nLimit: {format_minutes(limit)}\nLeft: {format_minutes(remaining)}", 0x40)
+        except Exception:
+            pass
+
+def tray_thread():
+    """System tray icon - click to open time window. Runs in own thread."""
+    # Try pystray first
+    try:
+        import pystray
+        from pystray import MenuItem as item
+        img = _create_tray_image()
+        if img is None:
+            raise ImportError("No PIL")
+
+        def on_show(icon, item):
+            # Run Tk window in separate thread to not block tray
+            threading.Thread(target=show_time_window, daemon=True).start()
+
+        def on_exit(icon, item):
+            try:
+                icon.stop()
+            except Exception:
+                pass
+            # Don't kill main app, just tray; but if user wants to exit app, they should use Task Manager or Disable
+            # We keep tray running; this just hides icon
+
+        def on_disable(icon, item):
+            try:
+                disable_app()
+            except Exception:
+                pass
+
+        menu = pystray.Menu(
+            item('Show Time Left', on_show, default=True),
+            item('Add 15 min (Ctrl+Alt+T)', lambda ic, it: add_bonus_time(BONUS_STEP_SEC)),
+            item('Disable (Ctrl+Shift+D)', on_disable),
+            pystray.Menu.SEPARATOR,
+            item('Exit Tray', on_exit)
+        )
+        global _tray_icon
+        _tray_icon = pystray.Icon("PlayLimit", img, "PlayLimit - Double-click to show time", menu)
+        log("Tray icon started (pystray) - double-click to show time")
+        _tray_icon.run()
+        return
+    except Exception as e:
+        log(f"Tray pystray failed ({e}), trying Tk fallback")
+
+    # Fallback: simple Tk hidden root with icon in taskbar (no real tray)
+    # We create a tiny Tk window that stays hidden and shows in taskbar; clicking it shows time
+    try:
+        import tkinter as tk
+        # This fallback just ensures show_time_window is available via hotkey; no tray
+        log("Tray fallback: use Ctrl+Alt+T / show_time_window() via console")
+        # Keep thread alive
+        while True:
+            time.sleep(60)
+    except Exception as e:
+        log(f"Tray fallback failed: {e}")
+
 def show_message(title: str, text: str, style: int = 0x40):
     """Windows MessageBox (MB_OK | MB_ICONWARNING etc). Non-blocking via thread? We use blocking but short."""
     try:
@@ -984,6 +1217,14 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start console thread: {e}")
 
+    # Start tray icon (click to show time window)
+    try:
+        tr = threading.Thread(target=tray_thread, daemon=True, name="TrayIcon")
+        tr.start()
+        log("Tray thread started - click icon to show time")
+    except Exception as e:
+        log(f"Failed to start tray thread: {e}")
+
     with _state_lock:
         state = load_state()
         save_state(state)
@@ -1128,6 +1369,23 @@ def main_loop():
             time.sleep(POLL_INTERVAL_SEC)
 
 if __name__ == "__main__":
+    # Handle --show-time: just open little time window and exit (for desktop icon)
+    if "--show-time" in sys.argv or "--time" in sys.argv:
+        try:
+            # No mutex needed for just showing time
+            show_time_window()
+        except Exception:
+            try:
+                with _state_lock:
+                    s = load_state()
+                    limit = get_effective_limit_sec(datetime.date.today(), s)
+                    used = int(s.get("used_seconds", 0))
+                    remaining = max(0, limit - used)
+                show_message("PlayLimit - Time Left", f"Used: {format_minutes(used)}\nLimit: {format_minutes(limit)}\nLeft: {format_minutes(remaining)}", 0x40)
+            except Exception:
+                pass
+        sys.exit(0)
+
     # --- Auto-update BEFORE mutex (so new exe can start) ---
     try:
         self_update()

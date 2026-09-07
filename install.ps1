@@ -174,6 +174,29 @@ try {
     Write-Host "Could not create startup shortcut: $_" -ForegroundColor Yellow
 }
 
+# Create desktop icon to open little time-remaining screen
+$DesktopDir = [Environment]::GetFolderPath("CommonDesktopDirectory")
+if (-not (Test-Path $DesktopDir)) { $DesktopDir = [Environment]::GetFolderPath("Desktop") }
+$DesktopPath = Join-Path $DesktopDir "PlayLimit Time.lnk"
+try {
+    $WshShell2 = New-Object -ComObject WScript.Shell
+    $Shortcut2 = $WshShell2.CreateShortcut($DesktopPath)
+    if ($HasExe) {
+        $Shortcut2.TargetPath = $ExeDest
+        $Shortcut2.Arguments = "--show-time"
+        $Shortcut2.IconLocation = $ExeDest
+    } else {
+        $Shortcut2.TargetPath = $PythonW
+        $Shortcut2.Arguments = "`"$InstallDir\$ScriptName`" --show-time"
+    }
+    $Shortcut2.WorkingDirectory = $InstallDir
+    $Shortcut2.Description = "PlayLimit - Show remaining time"
+    $Shortcut2.Save()
+    Write-Host "Desktop icon created: $DesktopPath (double-click to see time left)" -ForegroundColor Green
+} catch {
+    Write-Host "Could not create desktop icon: $_" -ForegroundColor Yellow
+}
+
 # Set permissions: make files not easily deletable by standard users (optional)
 try {
     icacls "$InstallDir" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" /grant:r "Administrators:(OI)(CI)F" /grant:r "Users:(OI)(CI)RX" | Out-Null
