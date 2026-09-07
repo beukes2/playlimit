@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -493,12 +493,24 @@ Set-ScheduledTask -TaskName '{task_name}' -Action $Action | Out-Null
     except Exception as e:
         log(f"Updater: task update error: {e}")
 
-def self_update():
-    """Called on startup. Pulls latest from git, syncs exe, and maybe relaunches."""
+def self_update(show_ui=False):
+    """Called on startup (and on tray click). Pulls latest from git, syncs exe, and maybe relaunches.
+       If show_ui=True, shows a popup with result (for manual tray click)."""
     if not AUTO_UPDATE_ENABLED:
+        if show_ui:
+            show_message("PlayLimit Update", "Auto-update is disabled.", 0x40)
         return
     try:
         log("=== Auto-update check ===")
+        # Remember current exe hash before update to detect if update actually happened
+        before_hash = None
+        try:
+            exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
+            if exe_in_cache.exists():
+                before_hash = _sha256_file(exe_in_cache)
+        except Exception:
+            pass
+
         ok = False
         if _try_git_update():
             ok = True
@@ -510,6 +522,52 @@ def self_update():
                 log("Updater: HTTP update done")
             else:
                 log("Updater: HTTP also failed or no update needed")
+
+        # Check if exe actually changed
+        after_hash = None
+        updated = False
+        try:
+            exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
+            if exe_in_cache.exists():
+                after_hash = _sha256_file(exe_in_cache)
+                if before_hash and after_hash and before_hash != after_hash:
+                    updated = True
+                    log(f"Updater: exe changed {before_hash[:8]} -> {after_hash[:8]}")
+                elif before_hash is None and after_hash:
+                    # first time cache, treat as updated if local exe differs
+                    if EXE_LOCAL.exists():
+                        try:
+                            if not _files_equal(exe_in_cache, EXE_LOCAL):
+                                updated = True
+                        except Exception:
+                            pass
+                    else:
+                        updated = True
+        except Exception:
+            pass
+
+        if show_ui:
+            if updated:
+                try:
+                    # Show version from file if available
+                    ver = __version__
+                    try:
+                        # Try to read version from cached py
+                        cached_py = UPDATE_CACHE_DIR / PY_REPO_NAME
+                        if cached_py.exists():
+                            txt = cached_py.read_text(encoding="utf-8", errors="ignore")
+                            import re
+                            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', txt)
+                            if m:
+                                ver = m.group(1)
+                    except Exception:
+                        pass
+                    show_message("PlayLimit Update", f"Updated to latest version v{ver}!\n\nRestarting...", 0x40)
+                except Exception:
+                    pass
+            else:
+                # Only show 'already latest' when manually triggered, not on silent startup
+                show_message("PlayLimit Update", f"Already on latest version v{__version__}.\n\nNo update needed.", 0x40)
 
         _launch_latest_exe_and_exit()
 
@@ -910,23 +968,45 @@ def tray_thread():
             raise ImportError("No PIL")
 
         def on_show(icon, item):
-            # Run Tk window in separate thread to not block tray
-            threading.Thread(target=show_time_window, daemon=True).start()
+            # Every time tray icon is clicked, check for updates first and show result, then show time window
+            def do_show_with_update():
+                try:
+                    # Show checking popup via log plus update check with UI
+                    log("Tray Show clicked - checking for updates...")
+                    # Run update check with UI (shows popup if updated or already latest)
+                    try:
+                        self_update(show_ui=True)
+                    except SystemExit:
+                        # self_update launched new exe and exited old process - this thread will die
+                        return
+                    except Exception as e:
+                        log(f"Tray update check error: {e}")
+                finally:
+                    # Always show time window after update check
+                    try:
+                        show_time_window()
+                    except Exception as e:
+                        log(f"Show window error: {e}")
+            threading.Thread(target=do_show_with_update, daemon=True).start()
+
+        def on_check(icon, item):
+            threading.Thread(target=lambda: self_update(show_ui=True), daemon=True).start()
 
         def on_exit(icon, item):
             try:
                 icon.stop()
             except Exception:
                 pass
-            # Don't kill main app, just tray; but if user wants to exit app, they should use Task Manager or Disable
-            # We keep tray running; this just hides icon
 
         menu = pystray.Menu(
-            item('Show Time Left', on_show, default=True)
+            item('Show Time Left', on_show, default=True),
+            item('Check for Updates', on_check),
+            pystray.Menu.SEPARATOR,
+            item('Exit Tray', on_exit)
         )
         global _tray_icon
-        _tray_icon = pystray.Icon("PlayLimit", img, f"{APP_NAME} v{__version__} - Double-click to show time", menu)
-        log(f"Tray icon started (pystray) v{__version__} - double-click to show time")
+        _tray_icon = pystray.Icon("PlayLimit", img, f"{APP_NAME} v{__version__} - Double-click to show time (checks for updates)", menu)
+        log(f"Tray icon started (pystray) v{__version__} - double-click to show time + auto-update on click")
         _tray_icon.run()
         return
     except Exception as e:
@@ -1343,11 +1423,21 @@ def main_loop():
             time.sleep(POLL_INTERVAL_SEC)
 
 if __name__ == "__main__":
-    # Handle --show-time: just open little time window and exit (for desktop icon)
+    # Handle --show-time: desktop icon - check for updates with UI, then show time window
     if "--show-time" in sys.argv or "--time" in sys.argv:
         try:
-            # No mutex needed for just showing time
+            # Check for updates first and show result (every time desktop icon is clicked)
+            try:
+                self_update(show_ui=True)
+            except SystemExit:
+                # self_update launched new exe - new process will show window
+                sys.exit(0)
+            except Exception:
+                pass
+            # No mutex needed for just showing time window
             show_time_window()
+        except SystemExit:
+            raise
         except Exception:
             try:
                 with _state_lock:
