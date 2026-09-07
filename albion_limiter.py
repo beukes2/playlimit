@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
