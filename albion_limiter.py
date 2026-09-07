@@ -888,22 +888,7 @@ def show_time_window():
                 except Exception:
                     pass
 
-        def on_add():
-            try:
-                add_bonus_time(BONUS_STEP_SEC)
-            except Exception:
-                pass
-
-        def on_disable():
-            try:
-                disable_app()
-                root.after(500, refresh)
-            except Exception:
-                pass
-
-        tk.Button(btn_frame, text="+15 min", command=on_add, bg="#3a3a5c", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
-        tk.Button(btn_frame, text="Disable", command=on_disable, bg="#5c1a1a", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
-        tk.Button(btn_frame, text="Close", command=root.destroy, bg="#2d2d44", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Close", command=root.destroy, bg="#2d2d44", fg="white", relief="flat", padx=12, width=10).pack(pady=2)
 
         refresh()
         # Center on screen
@@ -950,16 +935,8 @@ def tray_thread():
             # Don't kill main app, just tray; but if user wants to exit app, they should use Task Manager or Disable
             # We keep tray running; this just hides icon
 
-        def on_disable(icon, item):
-            try:
-                disable_app()
-            except Exception:
-                pass
-
         menu = pystray.Menu(
             item('Show Time Left', on_show, default=True),
-            item('Add 15 min (Ctrl+Alt+T)', lambda ic, it: add_bonus_time(BONUS_STEP_SEC)),
-            item('Disable (Ctrl+Shift+D)', on_disable),
             pystray.Menu.SEPARATOR,
             item('Exit Tray', on_exit)
         )
