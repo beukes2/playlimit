@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -716,17 +716,12 @@ def hotkey_listener_thread():
                     except Exception:
                         pass
                     try:
-                        # Disable task so it doesn't auto-restart immediately, then exit
-                        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/DISABLE"], capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+                        # Just exit - don't disable task or create flag, so next boot/startup will be ENABLED
+                        # (use Ctrl+Shift+D if you want to stay disabled)
+                        pass
                     except Exception:
                         pass
-                    # Also create disabled flag so next start knows it was closed intentionally
-                    try:
-                        DISABLE_FLAG_FILE.parent.mkdir(parents=True, exist_ok=True)
-                        DISABLE_FLAG_FILE.write_text("closed via Ctrl+Alt+D at " + datetime.datetime.now().isoformat(), encoding="utf-8")
-                    except Exception:
-                        pass
-                    log("PlayLimit closed via Ctrl+Alt+D - exiting")
+                    log("PlayLimit closed via Ctrl+Alt+D - exiting (next startup will be ENABLED)")
                     # Give popup a moment to show, then exit
                     time.sleep(0.5)
                     os._exit(0)
