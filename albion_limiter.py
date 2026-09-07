@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1239,12 +1239,26 @@ def format_minutes(sec: int) -> str:
     return f"{m} min {s} sec"
 
 def main_loop():
-    # Check persisted disabled flag
+    # Check persisted disabled flag - auto-clean stale close flags (v1.2.2 Ctrl+Alt+D created flag that should not persist)
     global APP_DISABLED
     try:
         if DISABLE_FLAG_FILE.exists():
-            APP_DISABLED = True
-            log(f"Startup: DISABLED flag found at {DISABLE_FLAG_FILE} - blocking is OFF (Ctrl+Shift+D to disable, delete flag to re-enable)")
+            try:
+                content = DISABLE_FLAG_FILE.read_text(encoding="utf-8", errors="ignore").lower()
+                # If flag was created via Ctrl+Alt+D close (should not cause persistent disabled), clean it
+                if "closed via ctrl+alt+d" in content:
+                    log(f"Startup: cleaning stale close flag at {DISABLE_FLAG_FILE} (was: {content.strip()[:60]}) - starting ENABLED")
+                    try:
+                        DISABLE_FLAG_FILE.unlink()
+                    except Exception:
+                        pass
+                    APP_DISABLED = False
+                else:
+                    APP_DISABLED = True
+                    log(f"Startup: DISABLED flag found at {DISABLE_FLAG_FILE} - blocking is OFF (Ctrl+Shift+D to disable, delete flag to re-enable)")
+            except Exception:
+                APP_DISABLED = True
+                log(f"Startup: DISABLED flag found at {DISABLE_FLAG_FILE} - blocking is OFF (Ctrl+Shift+D to disable, delete flag to re-enable)")
     except Exception:
         pass
 
