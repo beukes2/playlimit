@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.5"
+__version__ = "1.2.6"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -543,6 +543,133 @@ Set-ScheduledTask -TaskName '{task_name}' -Action $Action | Out-Null
     except Exception as e:
         log(f"Updater: task update error: {e}")
 
+def _http_simple_update(show_ui=False):
+    """Simple HTTP version check: fetch version.txt, compare, download exe if newer. Most reliable, no git needed."""
+    try:
+        import urllib.request
+        # Fetch remote version
+        ver_url = f"{REPO_RAW_BASE}/version.txt"
+        log(f"Updater: HTTP simple check {ver_url}")
+        try:
+            with urllib.request.urlopen(ver_url, timeout=10) as resp:
+                remote_ver = resp.read().decode('utf-8', errors='ignore').strip()
+        except Exception as e:
+            log(f"Updater: version fetch failed: {e}")
+            return False
+
+        # Compare versions (simple tuple)
+        def parse(v):
+            try:
+                return tuple(int(x) for x in v.strip().split('.'))
+            except Exception:
+                return (0,)
+        local = parse(__version__)
+        remote = parse(remote_ver)
+        log(f"Updater: local {__version__} vs remote {remote_ver}")
+        if remote <= local:
+            log("Updater: already latest (HTTP simple)")
+            return False
+
+        log(f"Updater: new version {remote_ver} available, downloading exe...")
+        exe_url = f"{REPO_RAW_BASE}/dist/PlayLimit.exe"
+        # Download to temp
+        import tempfile
+        tmp_path = Path(tempfile.gettempdir()) / f"PlayLimit_{remote_ver.replace('.','_')}.exe"
+        try:
+            with urllib.request.urlopen(exe_url, timeout=30) as resp:
+                data = resp.read()
+            if len(data) < 1024*100:
+                log("Updater: downloaded exe too small, abort")
+                return False
+            tmp_path.write_bytes(data)
+            log(f"Updater: downloaded {len(data)} bytes to {tmp_path}")
+        except Exception as e:
+            log(f"Updater: exe download failed: {e}")
+            return False
+
+        # Try to replace local exe
+        try:
+            # If running as exe, we can't overwrite ourselves, just launch temp and exit
+            if getattr(sys, 'frozen', False):
+                current = Path(sys.executable)
+                # Launch temp exe directly
+                log(f"Updater: launching new version {tmp_path}")
+                subprocess.Popen([str(tmp_path)], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
+                # Also try to overwrite ProgramData local for next time
+                try:
+                    import shutil
+                    # Try to copy to EXE_LOCAL for next boot, ignore lock
+                    try:
+                        EXE_LOCAL.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    shutil.copy2(tmp_path, EXE_LOCAL)
+                    log(f"Updater: updated {EXE_LOCAL}")
+                except Exception as e:
+                    log(f"Updater: copy to local failed (will use temp): {e}")
+                # Also try to update Program Files if writable
+                try:
+                    pf_exe = Path("C:/Program Files/AlbionLimiter/PlayLimit.exe")
+                    if pf_exe.exists():
+                        try:
+                            pf_exe.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        import shutil
+                        shutil.copy2(tmp_path, pf_exe)
+                        log(f"Updater: updated {pf_exe}")
+                except Exception:
+                    pass
+                if show_ui:
+                    show_message("PlayLimit Update", f"Updated to v{remote_ver}!\nRestarting...", 0x40)
+                # Exit current
+                time.sleep(0.5)
+                os._exit(0)
+            else:
+                # Running as python - just update local exe files
+                try:
+                    EXE_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    try:
+                        EXE_LOCAL.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    shutil.copy2(tmp_path, EXE_LOCAL)
+                    log(f"Updater: updated {EXE_LOCAL} to v{remote_ver}")
+                    pf_exe = Path("C:/Program Files/AlbionLimiter/PlayLimit.exe")
+                    try:
+                        pf_exe.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            pf_exe.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        shutil.copy2(tmp_path, pf_exe)
+                        log(f"Updater: updated {pf_exe}")
+                    except Exception:
+                        pass
+                    # Update cache too
+                    try:
+                        cache_exe = UPDATE_CACHE_DIR / EXE_REPO_REL
+                        cache_exe.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(tmp_path, cache_exe)
+                    except Exception:
+                        pass
+                    if show_ui:
+                        show_message("PlayLimit Update", f"Updated to v{remote_ver}!\nPlease restart PlayLimit.", 0x40)
+                    return True
+                except Exception as e:
+                    log(f"Updater: copy failed: {e}")
+                    return False
+        except SystemExit:
+            raise
+        except Exception as e:
+            log(f"Updater: http simple failed: {e}")
+            return False
+        return True
+    except Exception as e:
+        log(f"Updater: http simple error: {e}")
+        return False
+
 def self_update(show_ui=False):
     """Called on startup (and on tray click). Pulls latest from git, syncs exe, and maybe relaunches.
        If show_ui=True, shows a popup with result (for manual tray click)."""
@@ -552,6 +679,20 @@ def self_update(show_ui=False):
         return
     try:
         log("=== Auto-update check ===")
+        # First try simple HTTP version check (most reliable, no git, no storm)
+        if _http_simple_update(show_ui=show_ui):
+            # _http_simple_update already handled launch/exit if needed, if it returned True it updated as python
+            # For exe case it would have exited, so we only get here for python case
+            log("Updater: HTTP simple succeeded")
+            # Still do git pull in background to keep repo cache fresh, but don't need to launch
+            try:
+                _try_git_update()
+            except Exception:
+                pass
+            # Check if we should launch new exe (for python case, launch)
+            _launch_latest_exe_and_exit()
+            return
+
         # Remember current exe hash before update to detect if update actually happened
         before_hash = None
         try:
