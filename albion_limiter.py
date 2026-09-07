@@ -53,6 +53,29 @@ BROWSER_PROCESSES = [
     "browser.exe",
 ]
 
+# Browser block exempt - private; set env var PLAYLIMIT_EXEMPT=1 or create file %ProgramData%\AlbionLimiter\no_browser_block on dev PC
+def is_browser_block_exempt() -> bool:
+    try:
+        # Env var exempts this PC (set PLAYLIMIT_EXEMPT=1)
+        if os.environ.get("PLAYLIMIT_EXEMPT", "").lower() in ("1", "true", "yes"):
+            return True
+        # Local flag file exempts (create empty file C:\ProgramData\AlbionLimiter\no_browser_block on your dev PC)
+        try:
+            if DATA_DIR and (DATA_DIR / "no_browser_block").exists():
+                return True
+            # Optional host file: contains hostname to exempt
+            host_file = DATA_DIR / "exempt_host.txt"
+            if host_file.exists():
+                import socket
+                exempt_host = host_file.read_text(encoding="utf-8").strip().upper()
+                if exempt_host and (socket.gethostname().upper() == exempt_host or os.environ.get("COMPUTERNAME", "").upper() == exempt_host):
+                    return True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return False
+
 # App control
 APP_DISABLED = False  # set True by Ctrl+Shift+D hotkey
 DISABLE_FLAG_FILE = None  # set after DATA_DIR known
@@ -675,9 +698,13 @@ def console_thread():
         print(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
         print(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
         print(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
-        print(f" Browser block: {', '.join(BROWSER_PROCESSES)}")
+        if is_browser_block_exempt():
+            print(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
+        else:
+            print(f" Browser block: {', '.join(BROWSER_PROCESSES)}")
         print(f" State: {STATE_FILE}")
         print(f" Log:   {LOG_FILE}")
+        print(f" Killable: Yes - Task Manager (as Admin) -> End Task on PlayLimit.exe")
         print("-" * 60)
         sys.stdout.flush()
     except Exception:
@@ -702,6 +729,8 @@ def console_thread():
             # Color not needed, plain text
             if is_disabled():
                 line = f"[{ts}] *** DISABLED *** | PlayLimit is OFF | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} | Browser block OFF | Press reboot or delete {DISABLE_FLAG_FILE} to re-enable"
+            elif is_browser_block_exempt():
+                line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''} | Browser OFF (exempt)"
             else:
                 line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''} | Browser BLOCKED"
             try:
@@ -777,7 +806,7 @@ def is_albion_running() -> bool:
 
 def is_browser_running() -> bool:
     """Check if any browser process is running."""
-    if is_disabled():
+    if is_disabled() or is_browser_block_exempt():
         return False
     names_lower = [n.lower() for n in BROWSER_PROCESSES]
     if HAS_PSUTIL:
@@ -804,7 +833,7 @@ def is_browser_running() -> bool:
 
 def kill_browsers():
     """Close any browser process immediately."""
-    if is_disabled():
+    if is_disabled() or is_browser_block_exempt():
         return False
     killed = False
     names_lower = [n.lower() for n in BROWSER_PROCESSES]
@@ -931,6 +960,8 @@ def main_loop():
     log(f"State file: {STATE_FILE}")
     if is_disabled():
         log("STATUS: DISABLED - all limits and browser block are OFF")
+    elif is_browser_block_exempt():
+        log(f"STATUS: ACTIVE - Browser block OFF on this PC (exempt) | Albion limit ON")
     else:
         log(f"STATUS: ACTIVE - Browser block ON ({', '.join(BROWSER_PROCESSES)})")
     log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Alt+T, Disable: Ctrl+Shift+D")
@@ -983,6 +1014,8 @@ def main_loop():
             # If disabled, skip all blocking
             if is_disabled():
                 # Still sleep and continue; console will show DISABLED
+                if int(time.time()) % 60 == 0:
+                    log("PlayLimit DISABLED - skipping all checks (browsers/Alibion allowed)")
                 time.sleep(POLL_INTERVAL_SEC)
                 continue
 
@@ -990,6 +1023,7 @@ def main_loop():
             # Do this every poll so browsers cannot stay open
             try:
                 if is_browser_running():
+                    log("Browser detected - killing")
                     kill_browsers()
             except Exception as e:
                 log(f"Browser check error: {e}")

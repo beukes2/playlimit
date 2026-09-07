@@ -130,7 +130,7 @@ $Trigger3 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (N
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 $Settings.Hidden = $true
 $Settings.DisallowStartIfOnBatteries = $false
-$Settings.AllowHardTerminate = $false  # Prevent user from stopping via Task Scheduler UI
+$Settings.AllowHardTerminate = $true  # Allow parent to kill via Task Manager / Task Scheduler (kids as standard users still get Access Denied for SYSTEM task)
 
 # Try SYSTEM first (kids as standard users cannot kill SYSTEM processes)
 $Created = $false
