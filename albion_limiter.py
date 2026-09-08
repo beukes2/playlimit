@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.8"
+__version__ = "1.2.9"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1374,16 +1374,23 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start tray thread: {e}")
 
-    # Auto-show little time window 2 sec after startup so you SEE the app (GUI, not console)
+    # Update check runs in BACKGROUND so the window opens instantly on click.
+    # (It used to block startup for ~10s on git fetch - that was the delay.)
+    try:
+        threading.Thread(target=self_update, kwargs={"show_ui": False}, daemon=True, name="AutoUpdate").start()
+        log("Auto-update started in background (window opens first)")
+    except Exception as e:
+        log(f"Failed to start background update: {e}")
+
+    # Show little time window IMMEDIATELY so you SEE the app (GUI, not console)
     try:
         def _auto_show():
-            time.sleep(2)
             try:
                 show_time_window()
             except Exception:
                 pass
         threading.Thread(target=_auto_show, daemon=True).start()
-        log("Auto-show time window scheduled (2s)")
+        log("Auto-show time window (immediate)")
     except Exception:
         pass
 
@@ -1526,18 +1533,9 @@ if __name__ == "__main__":
     if "--show-time" in sys.argv or "--time" in sys.argv:
         sys.argv = [a for a in sys.argv if a not in ("--show-time", "--time")]
 
-    # --- Auto-update BEFORE mutex (so new exe can start) ---
-    try:
-        self_update()
-    except SystemExit:
-        raise
-    except Exception as e:
-        try:
-            log(f"Startup update error (non-fatal): {e}")
-        except Exception:
-            pass
-
-    # Ensure single instance
+    # Ensure single instance FIRST (fast, no network) so a second click exits instantly
+    # instead of waiting ~10s on an update check. The update itself runs in background
+    # inside main_loop() after the window is already visible.
     try:
         import ctypes.wintypes
         mutex_name = "Global\\AlbionLimiterMutex"
