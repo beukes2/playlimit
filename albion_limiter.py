@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -544,6 +544,57 @@ def _task_exists(task_name="AlbionLimiter"):
     except Exception:
         return False
 
+def _task_target(task_name="AlbionLimiter"):
+    """Executable the task launches, or None if unknown."""
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST"],
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        if r.returncode != 0:
+            return None
+        import re
+        m = re.search(r"Task To Run:\s+(.+)", r.stdout)
+        if not m:
+            return None
+        return m.group(1).strip().strip('"')
+    except Exception:
+        return None
+
+def _legacy_present():
+    """Old installed copies the new exe must delete (needs admin for Program Files)."""
+    try:
+        for legacy in (Path("C:/Program Files/AlbionLimiter/PlayLimit.exe"),
+                       Path("C:/Program Files/AlbionLimiter/launch_hidden.vbs")):
+            if legacy.exists():
+                return True
+    except Exception:
+        pass
+    return False
+
+def _elevation_due():
+    """True at most once per day (separate marker file so state.json never clobbers it)."""
+    try:
+        marker = DATA_DIR / "elevate_ask.txt"
+        today = datetime.date.today().isoformat()
+        if marker.exists():
+            if marker.read_text(encoding="utf-8", errors="ignore").strip() == today:
+                return False
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(today, encoding="utf-8")
+        return True
+    except Exception:
+        return True
+
+def _request_elevation():
+    try:
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas",
+            sys.executable if getattr(sys, 'frozen', False) else sys.argv[0],
+            "--do-install", None, 0)
+        _install_log("elevation requested (one UAC prompt)")
+    except Exception as e:
+        _install_log(f"elevation request failed: {e}")
+
 def _create_task_ps():
     """(Re)create the AlbionLimiter task via PowerShell cmdlets. Needs admin. Returns True on success."""
     live = str(LIVE_EXE)
@@ -659,18 +710,34 @@ def do_install_steps():
                        creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception:
         pass
-    # Task + shortcuts (need admin for Common dirs/task; per-user fallback otherwise)
-    task_ok = _task_exists()
-    if not task_ok:
+    # Task must exist AND launch the canonical exe. Legacy tasks pointing at old
+    # copies, and legacy Program Files files, are fixed by the new exe itself:
+    # admin does it inline, otherwise one UAC prompt per day max via --do-install.
+    needs_task_fix = False
+    if not _task_exists():
+        needs_task_fix = True
+        _install_log("task missing")
+    else:
+        try:
+            target = _task_target()
+            if target and Path(target).resolve() != LIVE_EXE.resolve():
+                needs_task_fix = True
+                _install_log(f"task points at stale copy ({target}) - will repoint to canonical")
+        except Exception as e:
+            _install_log(f"task target check skipped: {e}")
+    needs_legacy_fix = _legacy_present()
+    if needs_legacy_fix:
+        _install_log("legacy Program Files copy present - will delete")
+    if needs_task_fix or needs_legacy_fix:
         if _is_admin():
-            task_ok = _create_task_ps()
+            if needs_task_fix:
+                _create_task_ps()
+            # Legacy deletion attempted inline below (works when admin)
+        elif _elevation_due():
+            _install_log("needs admin fix - requesting elevation (one UAC prompt)")
+            _request_elevation()
         else:
-            _install_log("task missing and not admin - requesting elevation once")
-            try:
-                ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable if getattr(sys, 'frozen', False) else sys.argv[0],
-                                                    "--do-install", None, 0)
-            except Exception as e:
-                _install_log(f"elevation request failed: {e}")
+            _install_log("needs admin fix - already asked today, running portable")
     _create_shortcuts()
     ok = _task_exists()
     _install_log(f"install steps done (task present: {ok})")
