@@ -467,14 +467,15 @@ def _spawn_hop_helper_only(staged_ver: str):
     )
     HOP_HELPER_PS1.parent.mkdir(parents=True, exist_ok=True)
     HOP_HELPER_PS1.write_text(script, encoding="utf-8")
-    DETACHED = 0x00000008
+    # NOTE: do NOT use DETACHED_PROCESS here - empirically a detached powershell
+    # running a -File script exits 0 without executing anything. NEW_GROUP alone
+    # keeps the helper alive after we exit, -WindowStyle Hidden keeps it invisible.
     NEW_GROUP = 0x00000200
     subprocess.Popen(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-WindowStyle", "Hidden", "-File", str(HOP_HELPER_PS1),
          str(me), live, staged, sver, hoplog],
-        creationflags=DETACHED | NEW_GROUP,
-        close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=NEW_GROUP,
     )
     log(f"Updater: hop helper started for v{staged_ver} (see hop.log)")
 
