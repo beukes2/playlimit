@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 4, 1, 0),
-    prodvers=(1, 4, 1, 0),
+    filevers=(1, 5, 0, 0),
+    prodvers=(1, 5, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
         u'040904E4',
         [StringStruct(u'CompanyName', u'PlayLimit'),
         StringStruct(u'FileDescription', u'PlayLimit - Albion Online Parental Time Limiter'),
-        StringStruct(u'FileVersion', u'1.4.1'),
+        StringStruct(u'FileVersion', u'1.5.0'),
         StringStruct(u'InternalName', u'PlayLimit'),
         StringStruct(u'LegalCopyright', u'PlayLimit'),
         StringStruct(u'OriginalFilename', u'PlayLimit.exe'),
         StringStruct(u'ProductName', u'PlayLimit'),
-        StringStruct(u'ProductVersion', u'1.4.1')])
+        StringStruct(u'ProductVersion', u'1.5.0')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1252])])
   ]

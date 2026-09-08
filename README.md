@@ -61,23 +61,19 @@ git push
 ```
 `version.txt` must contain the new version (e.g. `1.4.0`) or clients will not pick it up.
 
-## Installation
+## Installation (none needed — just open the exe)
 
-1. Make sure **Python 3.10+** is installed from https://www.python.org — tick **"Add python.exe to PATH"**
+1. Download `PlayLimit.exe` (from `dist/` in this repo) and **double-click it** — that's the whole install.
+   - First run asks **one UAC Yes/No** (to create the logon task + icons), then the window opens.
+   - The exe copies itself to `%ProgramData%\AlbionLimiter\PlayLimit.exe` (the canonical copy
+     everything runs from), creates the `AlbionLimiter` logon/startup task and the
+     Startup + Desktop shortcuts, and deletes the legacy `C:\Program Files\...` copy.
+   - No Python needed (standalone exe). `install.ps1` still exists as an Admin alternative
+     that does the same steps.
+   - Pin the **Desktop icon** (`PlayLimit Time`) to the taskbar, not a Downloads copy —
+     any stale copy auto-hops to the canonical one on start.
 
-2. Right-click `install.ps1` → **Run with PowerShell as Administrator**  
-   Or from Admin PowerShell:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File install.ps1
-   ```
-
-3. The installer will:
-   - Copy files to `C:\Program Files\AlbionLimiter`
-   - Install `psutil` (if needed)
-   - Create a Scheduled Task `AlbionLimiter` that runs at logon/startup (+ 5-min watchdog)
-   - Start the limiter immediately
-
-4. Test:
+2. Test:
    ```powershell
    Get-Content C:\ProgramData\AlbionLimiter\state.json
    Get-Content C:\ProgramData\AlbionLimiter\limiter.log -Tail 20

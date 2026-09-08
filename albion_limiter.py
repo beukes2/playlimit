@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -496,6 +496,244 @@ def _pending_staged_version():
 def _http_simple_update(show_ui=False):
     """Deprecated stub - superseded by _check_and_stage_update(). Kept so no caller breaks. Never spawns processes."""
     return False
+
+def _is_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+def _exe_file_version(path):
+    """FileVersion string of an exe via the version API, or None."""
+    try:
+        from ctypes import wintypes
+        ver = ctypes.windll.version
+        ver.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        ver.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+        ver.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+        ver.GetFileVersionInfoW.restype = wintypes.BOOL
+        ver.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR,
+                                       ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.UINT)]
+        ver.VerQueryValueW.restype = wintypes.BOOL
+        dummy = wintypes.DWORD(0)
+        size = ver.GetFileVersionInfoSizeW(str(path), ctypes.byref(dummy))
+        if not size:
+            return None
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(str(path), 0, size, buf):
+            return None
+        lp = ctypes.c_void_p()
+        ln = wintypes.UINT(0)
+        if not ver.VerQueryValueW(buf, "\\VarFileInfo\\Translation", ctypes.byref(lp), ctypes.byref(ln)):
+            return None
+        import struct
+        lang, cp = struct.unpack("<HH", ctypes.string_at(lp.value, 4))
+        if not ver.VerQueryValueW(buf, f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileVersion",
+                                  ctypes.byref(lp), ctypes.byref(ln)):
+            return None
+        return ctypes.wstring_at(lp.value) or None
+    except Exception:
+        return None
+
+def _task_exists(task_name="AlbionLimiter"):
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task_name],
+                           capture_output=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+def _create_task_ps():
+    """(Re)create the AlbionLimiter task via PowerShell cmdlets. Needs admin. Returns True on success."""
+    live = str(LIVE_EXE)
+    ps = (
+        "$ErrorActionPreference='Stop'; "
+        f"$A = New-ScheduledTaskAction -Execute '{live}'; "
+        "$T1 = New-ScheduledTaskTrigger -AtLogOn; "
+        "$T2 = New-ScheduledTaskTrigger -AtStartup; "
+        "$S = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+        "-DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 0 -MultipleInstances IgnoreNew; "
+        "$S.Hidden = $false; $S.DisallowStartIfOnBatteries = $false; $S.AllowHardTerminate = $true; "
+        "try { Unregister-ScheduledTask -TaskName 'AlbionLimiter' -Confirm:$false -ErrorAction SilentlyContinue } catch {}; "
+        "try { "
+        "$P = New-ScheduledTaskPrincipal -GroupId 'Users' -RunLevel Highest; "
+        "Register-ScheduledTask -TaskName 'AlbionLimiter' -Action $A -Trigger $T1,$T2 -Settings $S -Principal $P "
+        "-Description 'PlayLimit GUI - visible window, self-updating' | Out-Null; "
+        "} catch { "
+        "$U = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; "
+        "$P2 = New-ScheduledTaskPrincipal -UserId $U -LogonType Interactive -RunLevel Highest; "
+        "Register-ScheduledTask -TaskName 'AlbionLimiter' -Action $A -Trigger $T1,$T2 -Settings $S -Principal $P2 "
+        "-Description 'PlayLimit GUI - visible window, self-updating' | Out-Null; "
+        "}"
+    )
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                           capture_output=True, text=True, timeout=60,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        if r.returncode == 0 and _task_exists():
+            log("Install: scheduled task AlbionLimiter created")
+            return True
+        log(f"Install: task creation failed rc={r.returncode} err={r.stderr[:200]}")
+        return False
+    except Exception as e:
+        log(f"Install: task creation error: {e}")
+        return False
+
+def _create_shortcuts():
+    """Startup + desktop shortcuts to LIVE_EXE. Common dirs need admin, else per-user fallback."""
+    live = str(LIVE_EXE)
+    data = str(DATA_DIR)
+    try:
+        import subprocess as _sp
+        ps = (
+            "$sh = New-Object -ComObject WScript.Shell; "
+            f"$live = '{live}'; $data = '{data}'; "
+            "$done = @(); "
+            "$startup = [Environment]::GetFolderPath('CommonStartup'); "
+            "if (-not $startup -or -not (Test-Path $startup)) { $startup = [Environment]::GetFolderPath('Startup') }; "
+            "try { $c = $sh.CreateShortcut((Join-Path $startup 'AlbionLimiter.lnk')); "
+            "$c.TargetPath = $live; $c.WorkingDirectory = $data; "
+            "$c.Description = 'AlbionLimiter - Parental Control'; $c.Save(); $done += 'startup' } catch {}; "
+            "$desk = [Environment]::GetFolderPath('CommonDesktopDirectory'); "
+            "if (-not $desk -or -not (Test-Path $desk)) { $desk = [Environment]::GetFolderPath('Desktop') }; "
+            "try { $c = $sh.CreateShortcut((Join-Path $desk 'PlayLimit Time.lnk')); "
+            "$c.TargetPath = $live; $c.Arguments = '--show-time'; $c.IconLocation = $live; "
+            "$c.WorkingDirectory = $data; $c.Description = 'PlayLimit - Show remaining time'; $c.Save(); $done += 'desktop' } catch {}; "
+            "$done -join ','"
+        )
+        r = _sp.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+        log(f"Install: shortcuts: {r.stdout.strip() or '?'} {r.stderr.strip()[:150]}")
+    except Exception as e:
+        log(f"Install: shortcuts error: {e}")
+
+def _install_log(msg):
+    try:
+        with open(DATA_DIR / "install.log", "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+    log(f"Install: {msg}")
+
+def do_install_steps():
+    """Idempotent install/verify. Safe to re-run. Returns True if task+shortcuts are in place."""
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        _install_log(f"mkdir failed: {e}")
+        return False
+    # Canonical exe: copy ourselves there when we are newer (or it is missing)
+    try:
+        if getattr(sys, 'frozen', False):
+            me = Path(sys.executable).resolve()
+            if me != LIVE_EXE.resolve() or not LIVE_EXE.exists():
+                import shutil
+                do_copy = False
+                if not LIVE_EXE.exists():
+                    do_copy = True
+                else:
+                    mv_me = _exe_file_version(me)
+                    mv_live = _exe_file_version(LIVE_EXE)
+                    if mv_me and (not mv_live or _parse_ver(mv_me) > _parse_ver(mv_live)):
+                        do_copy = True
+                if do_copy:
+                    shutil.copy2(me, LIVE_EXE)
+                    _install_log(f"installed exe -> {LIVE_EXE}")
+    except Exception as e:
+        _install_log(f"exe copy skipped: {e}")
+    # Legacy Program Files copy from older versions: remove (old code deleted)
+    try:
+        for legacy in (Path("C:/Program Files/AlbionLimiter/PlayLimit.exe"),
+                       Path("C:/Program Files/AlbionLimiter/launch_hidden.vbs")):
+            if legacy.exists():
+                legacy.unlink()
+                _install_log(f"removed legacy {legacy.name}")
+    except Exception as e:
+        _install_log(f"legacy cleanup skipped: {e}")
+    # Writable data dir for standard users (state + self-update)
+    try:
+        subprocess.run(f'icacls "{DATA_DIR}" /grant:r "*S-1-5-32-545:(OI)(CI)M"',
+                       shell=True, capture_output=True, timeout=15,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception:
+        pass
+    # Task + shortcuts (need admin for Common dirs/task; per-user fallback otherwise)
+    task_ok = _task_exists()
+    if not task_ok:
+        if _is_admin():
+            task_ok = _create_task_ps()
+        else:
+            _install_log("task missing and not admin - requesting elevation once")
+            try:
+                ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable if getattr(sys, 'frozen', False) else sys.argv[0],
+                                                    "--do-install", None, 0)
+            except Exception as e:
+                _install_log(f"elevation request failed: {e}")
+    _create_shortcuts()
+    ok = _task_exists()
+    _install_log(f"install steps done (task present: {ok})")
+    return ok
+
+def ensure_installed():
+    """Called at startup after the mutex. Makes 'double-click does everything' true:
+
+    - If launched from anywhere other than the canonical LIVE_EXE and we are newer
+      (or canonical is missing), install ourselves there and relaunch from it once.
+    - If launched from an older copy while canonical is newer, hop to canonical.
+    - Ensures task + shortcuts exist (elevates once via --do-install if needed).
+    Exits (clean SystemExit, pre-threads) whenever it relaunches elsewhere.
+    """
+    try:
+        if not getattr(sys, 'frozen', False):
+            return  # dev run from source: don't touch the system
+        me = Path(sys.executable).resolve()
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if me != LIVE_EXE.resolve():
+            if not LIVE_EXE.exists():
+                try:
+                    import shutil
+                    shutil.copy2(me, LIVE_EXE)
+                    log(f"Install: first run from {me.name} - installed to {LIVE_EXE}, relaunching there")
+                except Exception as e:
+                    log(f"Install: copy to canonical failed ({e}) - running portable this session")
+                    do_install_steps()
+                    return
+            else:
+                mv_me = _exe_file_version(me)
+                mv_live = _exe_file_version(LIVE_EXE)
+                if mv_me and mv_live and _parse_ver(mv_me) > _parse_ver(mv_live):
+                    try:
+                        import shutil
+                        shutil.copy2(me, LIVE_EXE)
+                        log(f"Install: this copy v{mv_me} newer than canonical v{mv_live} - updated canonical, relaunching")
+                    except Exception as e:
+                        log(f"Install: canonical update failed ({e}) - running portable this session")
+                        do_install_steps()
+                        return
+                elif mv_live and mv_me and _parse_ver(mv_live) > _parse_ver(mv_me):
+                    log(f"Install: canonical v{mv_live} is newer - hopping to it")
+                    subprocess.Popen([str(LIVE_EXE)],
+                                     creationflags=0x00000200, close_fds=True)
+                    sys.exit(0)
+                # else same version: fall through and run (portable copy, still enforces)
+            if LIVE_EXE.exists() and me != LIVE_EXE.resolve():
+                # Relaunch from canonical so task/shortcuts/updates all agree on one file
+                try:
+                    subprocess.Popen([str(LIVE_EXE)], creationflags=0x00000200, close_fds=True)
+                    log("Install: relaunched from canonical location")
+                except Exception as e:
+                    log(f"Install: relaunch failed ({e}) - running portable this session")
+                    do_install_steps()
+                    return
+                sys.exit(0)
+        # Running from canonical (normal case): verify install bits
+        do_install_steps()
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"Install: ensure error (non-fatal, running portable): {e}")
 
 def self_update(show_ui=False):
     """Self-update entry point (runs in background thread, also on tray click).
@@ -1517,6 +1755,20 @@ if __name__ == "__main__":
     if "--show-time" in sys.argv or "--time" in sys.argv:
         sys.argv = [a for a in sys.argv if a not in ("--show-time", "--time")]
 
+    # Elevated one-shot installer (spawned via UAC from ensure_installed on first run).
+    if "--do-install" in sys.argv:
+        try:
+            ok = do_install_steps()
+            sys.exit(0 if ok else 1)
+        except SystemExit:
+            raise
+        except Exception as e:
+            try:
+                _install_log(f"do-install fatal: {e}")
+            except Exception:
+                pass
+            sys.exit(1)
+
     # Ensure single instance FIRST (fast, no network) so a second click exits instantly
     # instead of waiting ~10s on an update check. The update itself runs in background
     # inside main_loop() after the window is already visible.
@@ -1534,6 +1786,16 @@ if __name__ == "__main__":
             os._exit(0)
     except Exception:
         pass
+
+    # Self-install: double-clicking the exe anywhere sets everything up
+    # (canonical copy, task, shortcuts) and relaunches from the canonical path.
+    # Pre-threads here, so any relaunch exit is clean.
+    try:
+        ensure_installed()
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"Install: ensure error (non-fatal, continuing): {e}")
 
     # Pending staged update from a previous run? Apply NOW with one hop before
     # opening anything, so this process never runs stale code. No threads started
