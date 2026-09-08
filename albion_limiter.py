@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.9"
+__version__ = "1.3.0"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -138,7 +138,12 @@ _tk_root = None
 
 def request_shutdown(reason="closed"):
     """Signal full app exit. Window closed = process exits, no traces left."""
-    log(f"Shutdown requested ({reason}) - closing window, tray, hotkeys, enforcement")
+    try:
+        import traceback
+        log(f"Shutdown requested ({reason}) - closing window, tray, hotkeys, enforcement")
+        log("request_shutdown stack: " + "".join(traceback.format_stack()[-8:-1]))
+    except Exception:
+        log(f"Shutdown requested ({reason}) - closing window, tray, hotkeys, enforcement")
     _shutdown.set()
     # Stop tray icon if running
     try:
@@ -948,7 +953,9 @@ def show_time_window():
         except Exception:
             pass
 
+        t_w0 = time.time()
         root = tk.Tk()
+        log(f"Window: Tk() created in {time.time()-t_w0:.1f}s")
         # Keep reference
         globals()['_time_window'] = root
         root.title(f"{APP_NAME} v{__version__} - Time Left")
@@ -1051,8 +1058,13 @@ def show_time_window():
         global _tk_root
         _tk_root = root
 
-        def on_close():
-            log("Time window closed via X/taskbar - full shutdown, no traces")
+        def on_close(*args):
+            try:
+                import traceback
+                log("Time window closed via X/taskbar - full shutdown, no traces")
+                log("on_close stack: " + "".join(traceback.format_stack()))
+            except Exception:
+                log("Time window closed via X/taskbar - full shutdown, no traces (stack failed)")
             try:
                 root.destroy()
             except Exception:
@@ -1080,6 +1092,18 @@ def show_time_window():
             x = (root.winfo_screenwidth() // 2) - (360 // 2)
             y = (root.winfo_screenheight() // 2) - (220 // 2)
             root.geometry(f"360x240+{x}+{y}")
+        except Exception:
+            pass
+        try:
+            root.update()
+            log(f"Window: mapped={root.winfo_ismapped()} viewable={root.winfo_viewable()} geom={root.winfo_geometry()}")
+        except Exception as e:
+            log(f"Window: pre-mainloop check failed: {e}")
+        # Close PyInstaller splash (shows instantly at launch during exe extraction)
+        try:
+            import pyi_splash  # type: ignore
+            pyi_splash.close()
+            log("Window: splash closed")
         except Exception:
             pass
         root.mainloop()
@@ -1350,6 +1374,23 @@ def main_loop():
     log(f"Watching: {', '.join(TARGET_PROCESSES)}")
     log(f"psutil available: {HAS_PSUTIL}")
 
+    # Show little time window FIRST so you SEE the app instantly on click.
+    # Everything heavy (pystray import, hotkeys, update check) starts AFTER,
+    # otherwise they contend startup and the window takes ~10s to appear.
+    try:
+        def _auto_show():
+            t0 = time.time()
+            log("Window thread started")
+            try:
+                show_time_window()
+                log(f"Window mainloop exited after {time.time()-t0:.1f}s")
+            except Exception as e:
+                log(f"Window thread failed after {time.time()-t0:.1f}s: {e}")
+        threading.Thread(target=_auto_show, daemon=True).start()
+        log("Auto-show time window (immediate, before tray/update)")
+    except Exception:
+        pass
+
     # Start hotkey listener (daemon)
     try:
         t = threading.Thread(target=hotkey_listener_thread, daemon=True, name="HotkeyListener")
@@ -1366,7 +1407,7 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start console thread: {e}")
 
-    # Start tray icon (click to show time window)
+    # Start tray icon (click to show time window) - LAST, pystray import is heavy
     try:
         tr = threading.Thread(target=tray_thread, daemon=True, name="TrayIcon")
         tr.start()
@@ -1374,25 +1415,12 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start tray thread: {e}")
 
-    # Update check runs in BACKGROUND so the window opens instantly on click.
-    # (It used to block startup for ~10s on git fetch - that was the delay.)
+    # Update check runs in BACKGROUND so it never blocks the window.
     try:
         threading.Thread(target=self_update, kwargs={"show_ui": False}, daemon=True, name="AutoUpdate").start()
         log("Auto-update started in background (window opens first)")
     except Exception as e:
         log(f"Failed to start background update: {e}")
-
-    # Show little time window IMMEDIATELY so you SEE the app (GUI, not console)
-    try:
-        def _auto_show():
-            try:
-                show_time_window()
-            except Exception:
-                pass
-        threading.Thread(target=_auto_show, daemon=True).start()
-        log("Auto-show time window (immediate)")
-    except Exception:
-        pass
 
     with _state_lock:
         state = load_state()
@@ -1536,14 +1564,18 @@ if __name__ == "__main__":
     # Ensure single instance FIRST (fast, no network) so a second click exits instantly
     # instead of waiting ~10s on an update check. The update itself runs in background
     # inside main_loop() after the window is already visible.
+    # NOTE: Local\ (not Global\) - creating a Global\ mutex needs SeCreateGlobalPrivilege,
+    # so as a standard user the check silently failed and every click spawned a duplicate.
     try:
         import ctypes.wintypes
-        mutex_name = "Global\\AlbionLimiterMutex"
+        mutex_name = "Local\\AlbionLimiterMutex"
         kernel32 = ctypes.windll.kernel32
         mutex = kernel32.CreateMutexW(None, False, mutex_name)
         if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             log("Another instance is already running, exiting")
-            sys.exit(0)
+            # os._exit (not sys.exit): unconditional instant death so no ghost
+            # process lingers invisibly - window visible = running, nothing else may run.
+            os._exit(0)
     except Exception:
         pass
 
