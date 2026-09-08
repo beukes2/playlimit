@@ -162,6 +162,25 @@ Example `state.json`:
 ```
 `bonus_seconds` = extra time added today via `Ctrl+Alt+T`.
 
+## Remote Logs (read all machines from this PC)
+
+Every running copy (v1.4.1+) uploads its log to the **private** repo
+`beukes2/playlimit-logs` under `logs/<HOSTNAME>-<date>.log` — first upload ~60s
+after start, then every 10 min. Read them from this PC with:
+```powershell
+gh repo clone beukes2/playlimit-logs "$env:TEMP\playlimit-logs" 2>$null
+Get-ChildItem "$env:TEMP\playlimit-logs\logs" | Sort-Object LastWriteTime -Descending
+Get-Content "$env:TEMP\playlimit-logs\logs\<HOST>-<date>.log" -Tail 30
+```
+Or browse: `https://github.com/beukes2/playlimit-logs/tree/master/logs`
+
+Setup (parent does this once per machine — the token is NEVER in the repo/exe):
+1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token
+2. Resource owner: beukes2, repository access: **Only select repositories → playlimit-logs**, permissions: **Contents → Read and write**, expiry: 1 year (note the date to rotate)
+3. As Admin on the machine, save it (no extra spaces/newlines) to `C:\ProgramData\AlbionLimiter\github_token.txt`
+4. Restart PlayLimit — log shows `LogShip: token found`, next upload within ~60s
+5. No token file = shipping silently off. The token can only touch the logs repo, nothing else.
+
 ## Troubleshooting
 
 - `Task Scheduler → AlbionLimiter → History / Last Run Result`

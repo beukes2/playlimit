@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -437,30 +437,46 @@ def _do_update_hop(staged_ver: str):
         import traceback
         log(traceback.format_exc())
 
+HOP_HELPER_PS1 = DATA_DIR / "hop_helper.ps1"
+HOP_LOG = DATA_DIR / "hop.log"
+
 def _spawn_hop_helper_only(staged_ver: str):
-    """Spawn the swap helper without touching app state (for pre-main-loop use)."""
-    import base64
+    """Spawn the swap helper without touching app state (for pre-main-loop use).
+
+    The helper is a plain .ps1 file (not an encoded blob) so it is inspectable
+    and writes every step to hop.log - if a hop ever fails, hop.log shows why.
+    """
     me = os.getpid()
     live = str(LIVE_EXE)
     staged = str(STAGED_EXE)
     sver = str(STAGED_VER)
-    ps = (
-        f"$me={me}; "
-        f"$live='{live}'; $staged='{staged}'; $sver='{sver}'; "
-        f"while (Get-Process -Id $me -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; "
-        f"Move-Item -LiteralPath $staged -Destination $live -Force; "
-        f"Remove-Item -LiteralPath $sver -Force -ErrorAction SilentlyContinue; "
-        f"Start-Process -FilePath $live"
+    hoplog = str(HOP_LOG)
+    script = (
+        "param([int]$OldPid, [string]$Live, [string]$Staged, [string]$Sver, [string]$HopLog)\n"
+        "\"hop-start old=$OldPid at $(Get-Date -Format 'HH:mm:ss')\" | Out-File $HopLog -Append\n"
+        "while (Get-Process -Id $OldPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 200 }\n"
+        "\"old-gone, moving staged->live\" | Out-File $HopLog -Append\n"
+        "try {\n"
+        "  Move-Item -LiteralPath $Staged -Destination $Live -Force -ErrorAction Stop\n"
+        "  \"moved ok\" | Out-File $HopLog -Append\n"
+        "} catch { \"MOVE-FAILED: $($_.Exception.Message)\" | Out-File $HopLog -Append; exit 1 }\n"
+        "Remove-Item -LiteralPath $Sver -Force -ErrorAction SilentlyContinue\n"
+        "\"marker deleted, relaunching\" | Out-File $HopLog -Append\n"
+        "Start-Process -FilePath $Live\n"
+        "\"relaunched\" | Out-File $HopLog -Append\n"
     )
-    b64 = base64.b64encode(ps.encode('utf-16-le')).decode('ascii')
+    HOP_HELPER_PS1.parent.mkdir(parents=True, exist_ok=True)
+    HOP_HELPER_PS1.write_text(script, encoding="utf-8")
     DETACHED = 0x00000008
     NEW_GROUP = 0x00000200
     subprocess.Popen(
-        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", b64],
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+         "-WindowStyle", "Hidden", "-File", str(HOP_HELPER_PS1),
+         str(me), live, staged, sver, hoplog],
         creationflags=DETACHED | NEW_GROUP,
         close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    log(f"Updater: hop helper started for v{staged_ver}")
+    log(f"Updater: hop helper started for v{staged_ver} (see hop.log)")
 
 def _pending_staged_version():
     """Return staged version string if a valid pending update exists, else None."""
@@ -525,6 +541,108 @@ def self_update(show_ui=False):
         log(f"Updater: unexpected error: {e}")
         import traceback
         log(traceback.format_exc())
+
+# ---------- GITHUB LOG SHIPPING ----------
+# Every running copy periodically uploads its log so the parent PC can read all
+# machines' logs from one place: https://github.com/beukes2/playlimit-logs/tree/master/logs
+# Auth: a fine-grained PAT (contents:write on playlimit-logs ONLY) lives in a local
+# file created by the parent on each machine - NEVER baked into the exe/repo.
+LOG_REPO = "beukes2/playlimit-logs"
+TOKEN_FILE = DATA_DIR / "github_token.txt"
+LOG_UPLOAD_EVERY_SEC = 600
+LOG_UPLOAD_MAX_BYTES = 200 * 1024
+
+def _read_token():
+    try:
+        if TOKEN_FILE.exists():
+            t = TOKEN_FILE.read_text(encoding="utf-8", errors="ignore").strip()
+            return t or None
+    except Exception:
+        pass
+    return None
+
+def _upload_log_once():
+    """Upload last LOG_UPLOAD_MAX_BYTES of limiter.log to logs/<HOST>-<date>.log. Returns True on success."""
+    token = _read_token()
+    if not token:
+        return False
+    try:
+        import socket
+        import base64 as _b64
+        import urllib.request as _urlreq
+        import urllib.error as _urlerr
+        try:
+            host = socket.gethostname()
+        except Exception:
+            host = os.environ.get("COMPUTERNAME", "unknown")
+        safe_host = "".join(c if (c.isalnum() or c in "-_") else "_" for c in host) or "unknown"
+        day = datetime.date.today().isoformat()
+        try:
+            raw = LOG_FILE.read_bytes()
+        except Exception:
+            return False
+        if len(raw) > LOG_UPLOAD_MAX_BYTES:
+            raw = raw[-LOG_UPLOAD_MAX_BYTES:]
+        header = f"# PlayLimit log | host={host} | version={__version__} | uploaded={datetime.datetime.now().isoformat()} | tail\n".encode("utf-8")
+        body = _b64.b64encode(header + raw).decode("ascii")
+        path = f"logs/{safe_host}-{day}.log"
+        api = f"https://api.github.com/repos/{LOG_REPO}/contents/{path}"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                   "Content-Type": "application/json", "User-Agent": "PlayLimit"}
+        # Need sha when overwriting an existing file
+        sha = None
+        try:
+            req = _urlreq.Request(api, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "PlayLimit"})
+            with _urlreq.urlopen(req, timeout=15) as resp:
+                sha = json.loads(resp.read().decode("utf-8")).get("sha")
+        except _urlerr.HTTPError as e:
+            if e.code != 404:
+                log(f"LogShip: check failed HTTP {e.code}")
+                return False
+        except Exception as e:
+            log(f"LogShip: check failed: {e}")
+            return False
+        payload = json.dumps({"message": f"log {safe_host} {day} {__version__}", "content": body, **({"sha": sha} if sha else {})}).encode("utf-8")
+        req = _urlreq.Request(api, data=payload, method="PUT", headers=headers)
+        with _urlreq.urlopen(req, timeout=30) as resp:
+            if resp.status in (200, 201):
+                log(f"LogShip: uploaded {len(raw)} bytes -> {path}")
+                return True
+            log(f"LogShip: unexpected HTTP {resp.status}")
+            return False
+    except _urlerr.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", errors="ignore")[:200]
+        except Exception:
+            detail = ""
+        log(f"LogShip: upload HTTP {e.code} {detail}")
+        return False
+    except Exception as e:
+        log(f"LogShip: upload failed: {e}")
+        return False
+
+def logship_thread():
+    """Upload logs every LOG_UPLOAD_EVERY_SEC (first try 60s after start). Silent when no token file."""
+    try:
+        if not _read_token():
+            log("LogShip: no token file (github_token.txt) - log shipping off (see README)")
+            return
+        log("LogShip: token found - shipping logs to GitHub")
+    except Exception:
+        pass
+    try:
+        time.sleep(60)
+        while not _shutdown.is_set():
+            try:
+                _upload_log_once()
+            except Exception as e:
+                try:
+                    log(f"LogShip: cycle error: {e}")
+                except Exception:
+                    pass
+            _shutdown.wait(LOG_UPLOAD_EVERY_SEC)
+    except Exception:
+        pass
 
 def add_bonus_time(seconds: int = BONUS_STEP_SEC):
     """Add bonus time for today. Called by hotkey. Thread-safe via _state_lock."""
@@ -1171,7 +1289,13 @@ def main_loop():
     except Exception as e:
         log(f"Protect failed: {e}")
 
+    try:
+        import socket
+        _host = socket.gethostname()
+    except Exception:
+        _host = os.environ.get("COMPUTERNAME", "unknown")
     log(f"=== AlbionLimiter started ===")
+    log(f"Host: {_host} | Version: {__version__} | Exe: {sys.executable if getattr(sys, 'frozen', False) else __file__}")
     log(f"Data dir: {DATA_DIR}")
     log(f"State file: {STATE_FILE}")
     if is_disabled():
@@ -1232,6 +1356,14 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start background update: {e}")
 
+    # Log shipping to GitHub (silent unless parent placed github_token.txt)
+    try:
+        lt = threading.Thread(target=logship_thread, daemon=True, name="LogShip")
+        lt.start()
+        log("LogShip thread started")
+    except Exception as e:
+        log(f"Failed to start logship thread: {e}")
+
     with _state_lock:
         state = load_state()
         save_state(state)
@@ -1277,6 +1409,19 @@ def main_loop():
                 log(f"Browser check error: {e}")
 
             running = is_albion_running()
+            # Edge-triggered transition log (full picture without spam)
+            try:
+                prev = state.get("last_seen_running", False)
+                if running and not prev:
+                    log(f"GAME START detected - counting time (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
+                elif prev and not running:
+                    log(f"GAME STOP detected - timer paused (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
+                if prev != running:
+                    with _state_lock:
+                        state["last_seen_running"] = running
+                        save_state(state)
+            except Exception:
+                pass
 
             if running:
                 # If already over limit -> block immediately
