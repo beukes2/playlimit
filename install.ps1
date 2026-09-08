@@ -114,7 +114,7 @@ Set WshShell = Nothing
 Set-Content -Path $VbsPath -Value $VbsContent -Encoding ASCII
 Write-Host "Created hidden launcher: $VbsPath" -ForegroundColor Green
 
-# Create Scheduled Task - runs at logon for all users + at startup, hidden + NOT CLOSABLE
+# Create Scheduled Task - runs at logon + at startup as the logged-on user (visible window, no auto-restart)
 Write-Host "Creating Scheduled Task '$TaskName'..." -ForegroundColor Yellow
 
 # Remove old task if exists
