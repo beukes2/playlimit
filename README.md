@@ -1,7 +1,7 @@
 # PlayLimit — Albion Online Parental Time Limiter
 
 Limits Albion Online playtime for kids:
-- **Currently: 10 minutes/day (test) — easy to change to 50/120**
+- **Mon–Thu: 45 minutes/day, Fri–Sun: 120 minutes/day**
 - 5 minute warning popup before time runs out
 - Automatically closes game when time is up
 - Blocks reopening until next day (midnight)
@@ -89,8 +89,8 @@ git push
 
 Config in `albion_limiter.py`:
 ```python
-WEEKDAY_LIMIT_SEC = 10 * 60  # currently 10 min test (set to 50*60 / 120*60 for prod)
-WEEKEND_LIMIT_SEC = 10 * 60
+WEEKDAY_LIMIT_SEC = 45 * 60   # Mon-Thu
+WEEKEND_LIMIT_SEC = 120 * 60  # Fri-Sun (Friday counts as weekend)
 WARNING_BEFORE_SEC = 5 * 60  # popup at 5 min left
 BONUS_STEP_SEC = 15 * 60     # per Ctrl+Alt+T
 BROWSER_PROCESSES = ["chrome.exe","msedge.exe","firefox.exe","brave.exe",...]

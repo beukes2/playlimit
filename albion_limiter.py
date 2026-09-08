@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Albion Online Parental Time Limiter
-- Weekdays: 50 minutes
-- Weekends: 120 minutes (2 hours)
+- Mon-Thu: 45 minutes
+- Fri-Sun: 120 minutes (2 hours, Friday counts as weekend)
 - 5 minute warning, then closes game and blocks re-open until next day (midnight)
 
 Runs silently in background. Install with install.ps1 (requires Admin).
@@ -19,12 +19,12 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
-WEEKDAY_LIMIT_SEC = 10 * 60          # 50 minutes
-WEEKEND_LIMIT_SEC = 10 * 60         # 120 minutes
+WEEKDAY_LIMIT_SEC = 45 * 60          # Mon-Thu default
+WEEKEND_LIMIT_SEC = 120 * 60         # Fri-Sun default (Friday counts as weekend)
 WARNING_BEFORE_SEC = 5 * 60          # 5 minute warning
 POLL_INTERVAL_SEC = 5                # check every 5 seconds
 GRACEFUL_CLOSE_TIMEOUT = 15          # seconds to wait after WM_CLOSE before kill
@@ -216,7 +216,10 @@ def is_weekend(d: datetime.date = None) -> bool:
     return d.weekday() >= 5  # 5=Sat, 6=Sun
 
 def get_daily_limit_sec(d: datetime.date = None) -> int:
-    return WEEKEND_LIMIT_SEC if is_weekend(d) else WEEKDAY_LIMIT_SEC
+    # Mon-Thu 45 min, Fri-Sun 120 min (Friday counts as weekend)
+    if d is None:
+        d = datetime.date.today()
+    return WEEKEND_LIMIT_SEC if d.weekday() >= 4 else WEEKDAY_LIMIT_SEC
 
 def get_effective_limit_sec(d: datetime.date = None, state: dict = None) -> int:
     """Base limit + bonus for today (bonus resets daily via state date)."""

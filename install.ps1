@@ -213,7 +213,7 @@ try {
 
 Write-Host ""
 Write-Host "=== INSTALL COMPLETE ===" -ForegroundColor Cyan
-Write-Host "Limits: 10 minutes (currently test, edit albion_limiter.py for 50/120)" -ForegroundColor White
+Write-Host "Limits: Mon-Thu 45 minutes, Fri-Sun 120 minutes" -ForegroundColor White
 Write-Host "Warning: 5 minutes before limit (popup)" -ForegroundColor White
 Write-Host "Behavior: closes Albion + blocks reopen until midnight, browser block ON (chrome/edge/firefox/brave/opera)" -ForegroundColor White
 Write-Host "Hotkeys: Ctrl+Alt+T = +15 min today, Ctrl+Shift+D = DISABLE PlayLimit" -ForegroundColor White
