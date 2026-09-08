@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1053,37 +1053,33 @@ def show_time_window():
                 except Exception:
                     pass
 
-        # Window IS closable: X, taskbar Close, Alt+F4 all do a full shutdown (no traces left).
+        # Kids must NOT be able to close the app via X, taskbar Close or Alt+F4.
+        # Those all arrive as WM_CLOSE -> ignored here (logged only).
+        # Parent closes via Ctrl+Alt+D hotkey or Task Manager as Admin (TerminateProcess
+        # cannot be blocked); both do a full shutdown so no traces are left behind.
         # Register this root so request_shutdown() can destroy it from hotkeys.
         global _tk_root
         _tk_root = root
 
         def on_close(*args):
-            try:
-                import traceback
-                log("Time window closed via X/taskbar - full shutdown, no traces")
-                log("on_close stack: " + "".join(traceback.format_stack()))
-            except Exception:
-                log("Time window closed via X/taskbar - full shutdown, no traces (stack failed)")
-            try:
-                root.destroy()
-            except Exception:
-                pass
-            try:
-                global _time_window
-                _time_window = None
-            except Exception:
-                pass
-            _tk_root = None
-            request_shutdown("window X/taskbar closed")
-            # Force exit so Task Manager shows nothing (no lingering threads)
-            time.sleep(0.3)
-            os._exit(0)
+            log("Close attempt blocked (X/taskbar/Alt+F4) - kids cannot close; parent: Ctrl+Alt+D or Task Manager as Admin")
 
         try:
             root.protocol("WM_DELETE_WINDOW", on_close)
         except Exception:
             pass
+        # Grey out / remove Close from the window system menu (X button + taskbar menu)
+        try:
+            root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+            if hwnd:
+                hMenu = ctypes.windll.user32.GetSystemMenu(hwnd, 0)
+                if hMenu:
+                    ctypes.windll.user32.DeleteMenu(hMenu, 0xF060, 0x0)  # SC_CLOSE
+                    ctypes.windll.user32.DrawMenuBar(hwnd)
+                    log("Window: system-menu Close disabled")
+        except Exception as e:
+            log(f"Window: could not disable system-menu Close: {e}")
 
         refresh()
         # Center on screen
@@ -1134,16 +1130,10 @@ def tray_thread():
                     log(f"Show window error: {e}")
             threading.Thread(target=do_show, daemon=True).start()
 
-        def on_exit(icon, item):
-            # Exit Tray = exit the whole app so no traces are left in Task Manager
-            log("Tray Exit clicked - full shutdown, no traces")
-            request_shutdown("tray exit")
-            time.sleep(0.3)
-            os._exit(0)
-
+        # NOTE: no Exit/Disable menu items on purpose - kids would click them.
+        # Parent closes via Ctrl+Alt+D hotkey or Task Manager as Admin.
         menu = pystray.Menu(
-            item('Show Time Left', on_show, default=True),
-            item('Exit PlayLimit', on_exit)
+            item('Show Time Left', on_show, default=True)
         )
         global _tray_icon
         _tray_icon = pystray.Icon("PlayLimit", img, f"{APP_NAME} v{__version__} - Double-click to show time (checks for updates)", menu)
