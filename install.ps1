@@ -123,39 +123,31 @@ try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction 
 $Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$VbsPath`""
 $Trigger1 = New-ScheduledTaskTrigger -AtLogOn
 $Trigger2 = New-ScheduledTaskTrigger -AtStartup
-# Run every 5 minutes as backup if killed (watchdog) + every 1 min restart
-$Trigger3 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+# NOTE: no 5-minute watchdog trigger on purpose. Window visible = running, closed = fully gone.
+# The task only starts the app at logon/startup. Closing the window exits the process and
+# Task Scheduler does NOT restart it (RestartCount 0).
 
-# Settings: allow run on battery, don't stop, restart on failure - makes it NOT closable (auto-restart)
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-$Settings.Hidden = $true
+# Settings: allow run on battery, don't stop. RestartCount 0 so a user close stays closed.
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 0 -MultipleInstances IgnoreNew
+$Settings.Hidden = $false
 $Settings.DisallowStartIfOnBatteries = $false
-$Settings.AllowHardTerminate = $true  # Allow parent to kill via Task Manager / Task Scheduler (kids as standard users still get Access Denied for SYSTEM task)
+$Settings.AllowHardTerminate = $true  # Parent can End Task via Task Manager; closing window exits fully
 
-# Try Users first (visible tray + desktop icon, killable via Task Manager as Admin, kids as standard still get restart)
+# Users principal only (visible window on the user's desktop). No SYSTEM fallback - SYSTEM
+# runs in session 0 where the window is invisible, which violates "window visible = running".
 $Created = $false
 try {
     $Principal = New-ScheduledTaskPrincipal -GroupId "Users" -RunLevel Highest
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $Principal -Description "PlayLimit v1.0.0 GUI - 10min limit, browser block, tray visible - Ctrl+Shift+D to disable" | Out-Null
-    Write-Host "Scheduled Task created as Users (visible tray, restart on kill)!" -ForegroundColor Green
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal -Description "PlayLimit GUI - 10min limit, browser block, visible window - Ctrl+Shift+D disables and exits" | Out-Null
+    Write-Host "Scheduled Task created as Users (visible window, no auto-restart on close)!" -ForegroundColor Green
     $Created = $true
 } catch {
-    Write-Host "Users task failed ($_), trying SYSTEM (hidden, not visible)..." -ForegroundColor Yellow
-}
-
-if (-not $Created) {
-    try {
-        $PrincipalSys = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2,$Trigger3 -Settings $Settings -Principal $PrincipalSys -Description "PlayLimit: 10min limit, browser block, not closable (SYSTEM) - Ctrl+Shift+D to disable" | Out-Null
-        Write-Host "Scheduled Task created as SYSTEM (kids cannot kill - Access Denied)!" -ForegroundColor Green
-        $Created = $true
-    } catch {
-        Write-Host "SYSTEM task failed, trying current user..." -ForegroundColor Yellow
-        $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $Principal2 = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Highest
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "PlayLimit: 10min limit, browser block" | Out-Null
-        Write-Host "Scheduled Task created (user-specific)!" -ForegroundColor Green
-    }
+    Write-Host "Users task failed ($_), trying current user..." -ForegroundColor Yellow
+    $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $Principal2 = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Highest
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "PlayLimit GUI - 10min limit, browser block, visible window" | Out-Null
+    Write-Host "Scheduled Task created (user-specific, visible, no auto-restart)!" -ForegroundColor Green
+    $Created = $true
 }
 
 # Also add to Startup folder as fallback (for non-admin installs)

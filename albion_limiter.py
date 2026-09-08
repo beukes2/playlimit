@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.2.7"
+__version__ = "1.2.8"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -133,6 +133,37 @@ def log(msg: str):
     except Exception:
         pass
 
+_shutdown = threading.Event()
+_tk_root = None
+
+def request_shutdown(reason="closed"):
+    """Signal full app exit. Window closed = process exits, no traces left."""
+    log(f"Shutdown requested ({reason}) - closing window, tray, hotkeys, enforcement")
+    _shutdown.set()
+    # Stop tray icon if running
+    try:
+        global _tray_icon
+        if '_tray_icon' in globals() and _tray_icon is not None:
+            try:
+                _tray_icon.stop()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Close Tk window if open (schedule on Tk thread if needed)
+    try:
+        global _tk_root
+        if _tk_root is not None:
+            try:
+                _tk_root.after(0, _tk_root.destroy)
+            except Exception:
+                try:
+                    _tk_root.destroy()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 def is_disabled() -> bool:
     # No persistent flag - disabled is in-memory only for this session, always starts enabled
     return APP_DISABLED
@@ -140,14 +171,18 @@ def is_disabled() -> bool:
 def disable_app():
     global APP_DISABLED
     APP_DISABLED = True
-    log("=== PlayLimit DISABLED by Ctrl+Shift+D (session only - will re-enable on next startup) ===")
-    # Don't create disabled.flag anymore - no persistence
-    # Don't disable scheduled task - app will start enabled next boot
+    log("=== PlayLimit DISABLED by Ctrl+Shift+D - shutting down fully (no traces) ===")
+    # No popup, no flag file. Disable scheduled task so it does not restart hidden,
+    # then exit the whole process so Task Manager shows nothing.
     try:
-        show_warning_async("PlayLimit - Disabled", "PlayLimit has been DISABLED for this session.\n\nBrowsers and Albion are now allowed until next restart.\n\nApp will re-enable on next startup.", style=0x40)
-    except Exception:
-        pass
-    # Don't exit immediately - let main loop see disabled flag and skip blocking; console will show DISABLED
+        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/DISABLE"], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+        log("Scheduled task AlbionLimiter disabled (disable hotkey)")
+    except Exception as e:
+        log(f"Disable task failed: {e}")
+    request_shutdown("disabled via Ctrl+Shift+D")
+    # Give UI a moment to tear down, then force exit so no thread lingers
+    time.sleep(0.5)
+    os._exit(0)
 
 def enable_app():
     global APP_DISABLED
@@ -164,40 +199,8 @@ def enable_app():
     log("PlayLimit re-enabled")
 
 def protect_process():
-    """Make console/app not closable by kids: disable close button, ignore Ctrl+C/close, and try to deny terminate."""
-    # Ignore console close / logoff / shutdown
-    try:
-        # Handler that returns 1 = ignore
-        handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
-        def handler(ctrl):
-            if ctrl in (0, 2, 5, 6):  # CTRL_C=0, CTRL_BREAK=1, CLOSE=2, LOGOFF=5, SHUTDOWN=6
-                log(f"Blocked close attempt ctrl={ctrl}")
-                return 1
-            return 0
-        # Keep reference alive
-        global _console_handler_ref
-        _console_handler_ref = handler_type(handler)
-        ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler_ref, 1)
-    except Exception as e:
-        log(f"protect: SetConsoleCtrlHandler failed: {e}")
-    # Disable close button
-    try:
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            hMenu = ctypes.windll.user32.GetSystemMenu(hwnd, 0)
-            if hMenu:
-                # SC_CLOSE = 0xF060, MF_BYCOMMAND = 0
-                ctypes.windll.user32.DeleteMenu(hMenu, 0xF060, 0x0)
-                ctypes.windll.user32.EnableMenuItem(hMenu, 0xF060, 0x1)  # MF_GRAYED=1
-                ctypes.windll.user32.DrawMenuBar(hwnd)
-    except Exception as e:
-        log(f"protect: DeleteMenu failed: {e}")
-    # Try to set file ACLs so kids can't delete exe (best-effort, may need admin)
-    try:
-        # Deny terminate for Users on current process via ACL is complex; fallback to making task SYSTEM
-        pass
-    except Exception:
-        pass
+    """No-op now: app must be closable. Window visible = running, closed = fully gone."""
+    return
 
 def is_weekend(d: datetime.date = None) -> bool:
     if d is None:
@@ -486,19 +489,13 @@ def _launch_latest_exe_and_exit():
             log("Updater: already running latest exe")
             return False
 
-        if not getattr(sys, 'frozen', False):
-            log(f"Updater: launching exe {candidate} and exiting Python")
-            subprocess.Popen([str(candidate)], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
-            try:
-                _update_scheduled_task_to_exe(candidate)
-            except Exception as e:
-                log(f"Updater: task update failed: {e}")
-            sys.exit(0)
-        else:
-            if candidate.resolve() != current.resolve():
-                log(f"Updater: newer exe available {candidate} vs {current}, launching new and exiting")
-                subprocess.Popen([str(candidate)], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
-                sys.exit(0)
+        # No auto-relaunch: never spawn a successor process (that caused the respawn storm).
+        # If an update was downloaded, it applies on the NEXT manual start. Current visible
+        # instance keeps running so the window never flashes/disappears.
+        if current and candidate.resolve() != current.resolve():
+            log(f"Updater: newer exe staged at {candidate} (current {current.name}) - will apply on next start, no relaunch")
+        elif not getattr(sys, 'frozen', False) and candidate.exists():
+            log(f"Updater: exe staged at {candidate} for next start (running as Python, no relaunch)")
         return False
     except SystemExit:
         raise
@@ -571,44 +568,21 @@ def _http_simple_update(show_ui=False):
             log(f"Updater: exe download failed: {e}")
             return False
 
-        # Try to replace local exe
+        # Try to replace local exe - NEVER relaunch (no storm). Stage for next manual start.
         try:
-            # If running as exe, we can't overwrite ourselves, just launch temp and exit
+            # If running as exe, we can't overwrite ourselves while running; just stage the
+            # download next to the cache and log it. No Popen, no exit - visible window keeps running.
             if getattr(sys, 'frozen', False):
-                current = Path(sys.executable)
-                # Launch temp exe directly
-                log(f"Updater: launching new version {tmp_path}")
-                subprocess.Popen([str(tmp_path)], creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
-                # Also try to overwrite ProgramData local for next time
                 try:
+                    staged = UPDATE_CACHE_DIR / f"PlayLimit_{remote_ver.replace('.','_')}_staged.exe"
+                    staged.parent.mkdir(parents=True, exist_ok=True)
                     import shutil
-                    # Try to copy to EXE_LOCAL for next boot, ignore lock
-                    try:
-                        EXE_LOCAL.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    shutil.copy2(tmp_path, EXE_LOCAL)
-                    log(f"Updater: updated {EXE_LOCAL}")
+                    shutil.copy2(tmp_path, staged)
+                    log(f"Updater: v{remote_ver} staged at {staged} - restart the app manually to use it (no auto-relaunch)")
                 except Exception as e:
-                    log(f"Updater: copy to local failed (will use temp): {e}")
-                # Also try to update Program Files if writable
-                try:
-                    pf_exe = Path("C:/Program Files/AlbionLimiter/PlayLimit.exe")
-                    if pf_exe.exists():
-                        try:
-                            pf_exe.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                        import shutil
-                        shutil.copy2(tmp_path, pf_exe)
-                        log(f"Updater: updated {pf_exe}")
-                except Exception:
-                    pass
-                if show_ui:
-                    show_message("PlayLimit Update", f"Updated to v{remote_ver}!\nRestarting...", 0x40)
-                # Exit current
-                time.sleep(0.5)
-                os._exit(0)
+                    log(f"Updater: stage failed: {e}")
+                # show_ui is ignored - no popups allowed; window label shows version instead
+                return True
             else:
                 # Running as python - just update local exe files
                 try:
@@ -663,18 +637,9 @@ def self_update(show_ui=False):
         return
     try:
         log("=== Auto-update check ===")
-        # First try simple HTTP version check (most reliable, no git, no storm)
+        # First try simple HTTP version check (most reliable, no git, no storm, no relaunch)
         if _http_simple_update(show_ui=show_ui):
-            # _http_simple_update already handled launch/exit if needed, if it returned True it updated as python
-            # For exe case it would have exited, so we only get here for python case
-            log("Updater: HTTP simple succeeded")
-            # Still do git pull in background to keep repo cache fresh, but don't need to launch
-            try:
-                _try_git_update()
-            except Exception:
-                pass
-            # Check if we should launch new exe (for python case, launch)
-            _launch_latest_exe_and_exit()
+            log("Updater: HTTP simple staged an update for next manual start (no relaunch)")
             return
 
         # Remember current exe hash before update to detect if update actually happened
@@ -721,30 +686,10 @@ def self_update(show_ui=False):
         except Exception:
             pass
 
-        if show_ui:
-            if updated:
-                try:
-                    # Show version from file if available
-                    ver = __version__
-                    try:
-                        # Try to read version from cached py
-                        cached_py = UPDATE_CACHE_DIR / PY_REPO_NAME
-                        if cached_py.exists():
-                            txt = cached_py.read_text(encoding="utf-8", errors="ignore")
-                            import re
-                            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', txt)
-                            if m:
-                                ver = m.group(1)
-                    except Exception:
-                        pass
-                    show_message("PlayLimit Update", f"Updated to latest version v{ver}!\n\nRestarting...", 0x40)
-                except Exception:
-                    pass
-            else:
-                # Only show 'already latest' when manually triggered, not on silent startup
-                show_message("PlayLimit Update", f"Already on latest version v{__version__}.\n\nNo update needed.", 0x40)
-
-        _launch_latest_exe_and_exit()
+        # show_ui popups removed - no popups allowed. Update status is visible in the
+        # app window title/version label and in limiter.log only.
+        if updated:
+            log("Updater: staged update for next manual start (no relaunch, no popup)")
 
         try:
             running_py = Path(__file__).resolve()
@@ -885,19 +830,8 @@ def hotkey_listener_thread():
                     except Exception as e:
                         log(f"Disable hotkey error: {e}")
                 elif msg.wParam == HOTKEY_ID_CLOSE:
-                    log("Hotkey pressed: Ctrl+Alt+D - CLOSING PlayLimit")
-                    try:
-                        show_warning_async("PlayLimit", "PlayLimit is closing...\n\nTo restart, run PlayLimit again or reboot.", 0x40)
-                    except Exception:
-                        pass
-                    try:
-                        # Just exit - don't disable task or create flag, so next boot/startup will be ENABLED
-                        # (use Ctrl+Shift+D if you want to stay disabled)
-                        pass
-                    except Exception:
-                        pass
-                    log("PlayLimit closed via Ctrl+Alt+D - exiting (next startup will be ENABLED)")
-                    # Give popup a moment to show, then exit
+                    log("Hotkey pressed: Ctrl+Alt+D - CLOSING PlayLimit (no popup, full exit)")
+                    request_shutdown("closed via Ctrl+Alt+D")
                     time.sleep(0.5)
                     os._exit(0)
             user32.TranslateMessage(ctypes.byref(msg))
@@ -1112,26 +1046,30 @@ def show_time_window():
                 except Exception:
                     pass
 
-        # No Close button - kids would click it; window is not closable via X or taskbar either
-        # Keep an empty frame for spacing
-        tk.Label(btn_frame, text=" ", bg="#1e1e2e").pack()
+        # Window IS closable: X, taskbar Close, Alt+F4 all do a full shutdown (no traces left).
+        # Register this root so request_shutdown() can destroy it from hotkeys.
+        global _tk_root
+        _tk_root = root
 
-        # Make window NOT closable via X or taskbar (Alt+F4, system menu)
-        try:
-            root.protocol("WM_DELETE_WINDOW", lambda: None)
-            # Also disable system menu Close via Win32
+        def on_close():
+            log("Time window closed via X/taskbar - full shutdown, no traces")
             try:
-                hwnd = ctypes.windll.user32.FindWindowW(None, root.title())
-                if hwnd == 0:
-                    # Try GetParent for Tk window
-                    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-                if hwnd:
-                    hMenu = ctypes.windll.user32.GetSystemMenu(hwnd, 0)
-                    if hMenu:
-                        ctypes.windll.user32.DeleteMenu(hMenu, 0xF060, 0x0)  # SC_CLOSE
-                        ctypes.windll.user32.DrawMenuBar(hwnd)
+                root.destroy()
             except Exception:
                 pass
+            try:
+                global _time_window
+                _time_window = None
+            except Exception:
+                pass
+            _tk_root = None
+            request_shutdown("window X/taskbar closed")
+            # Force exit so Task Manager shows nothing (no lingering threads)
+            time.sleep(0.3)
+            os._exit(0)
+
+        try:
+            root.protocol("WM_DELETE_WINDOW", on_close)
         except Exception:
             pass
 
@@ -1145,16 +1083,11 @@ def show_time_window():
         except Exception:
             pass
         root.mainloop()
+    except SystemExit:
+        raise
     except Exception as e:
         try:
             log(f"show_time_window error: {e}")
-            # Fallback to MessageBox with time
-            with _state_lock:
-                s = load_state()
-                limit = get_effective_limit_sec(datetime.date.today(), s)
-                used = int(s.get("used_seconds", 0))
-                remaining = max(0, limit - used)
-            show_message("PlayLimit - Time Left", f"Used: {format_minutes(used)}\nLimit: {format_minutes(limit)}\nLeft: {format_minutes(remaining)}", 0x40)
         except Exception:
             pass
 
@@ -1169,41 +1102,24 @@ def tray_thread():
             raise ImportError("No PIL")
 
         def on_show(icon, item):
-            # Every time tray icon is clicked, check for updates first and show result, then show time window
-            def do_show_with_update():
+            # Tray click only opens the window (update check is silent on startup, no popup).
+            def do_show():
                 try:
-                    # Show checking popup via log plus update check with UI
-                    log("Tray Show clicked - checking for updates...")
-                    # Run update check with UI (shows popup if updated or already latest)
-                    try:
-                        self_update(show_ui=True)
-                    except SystemExit:
-                        # self_update launched new exe and exited old process - this thread will die
-                        return
-                    except Exception as e:
-                        log(f"Tray update check error: {e}")
-                finally:
-                    # Always show time window after update check
-                    try:
-                        show_time_window()
-                    except Exception as e:
-                        log(f"Show window error: {e}")
-            threading.Thread(target=do_show_with_update, daemon=True).start()
-
-        def on_check(icon, item):
-            threading.Thread(target=lambda: self_update(show_ui=True), daemon=True).start()
+                    show_time_window()
+                except Exception as e:
+                    log(f"Show window error: {e}")
+            threading.Thread(target=do_show, daemon=True).start()
 
         def on_exit(icon, item):
-            try:
-                icon.stop()
-            except Exception:
-                pass
+            # Exit Tray = exit the whole app so no traces are left in Task Manager
+            log("Tray Exit clicked - full shutdown, no traces")
+            request_shutdown("tray exit")
+            time.sleep(0.3)
+            os._exit(0)
 
         menu = pystray.Menu(
             item('Show Time Left', on_show, default=True),
-            item('Check for Updates', on_check),
-            pystray.Menu.SEPARATOR,
-            item('Exit Tray', on_exit)
+            item('Exit PlayLimit', on_exit)
         )
         global _tray_icon
         _tray_icon = pystray.Icon("PlayLimit", img, f"{APP_NAME} v{__version__} - Double-click to show time (checks for updates)", menu)
@@ -1226,25 +1142,12 @@ def tray_thread():
         log(f"Tray fallback failed: {e}")
 
 def show_message(title: str, text: str, style: int = 0x40):
-    """Windows MessageBox (MB_OK | MB_ICONWARNING etc). Non-blocking via thread? We use blocking but short."""
-    try:
-        ctypes.windll.user32.MessageBoxW(0, text, title, style)
-    except Exception as e:
-        log(f"MessageBox failed: {e}")
+    """No popups allowed - log only. Window visible = running, no MessageBox of any kind."""
+    log(f"UI message suppressed [{title}]: {text[:200]}")
 
 def show_warning_async(title, text, style=0x30):
-    """Show MessageBox without blocking main loop (in separate process)."""
-    try:
-        # Use powershell popup via subprocess to avoid blocking
-        # Or spawn a new python process to show messagebox
-        subprocess.Popen(
-            [sys.executable, "-c",
-             f"import ctypes; ctypes.windll.user32.MessageBoxW(0, {text!r}, {title!r}, {style})"],
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-    except Exception:
-        # fallback blocking
-        show_message(title, text, style)
+    """No popups allowed - log only (previously spawned MessageBox subprocess)."""
+    log(f"UI message suppressed [{title}]: {text[:200]}")
 
 def is_albion_running() -> bool:
     names_lower = [n.lower() for n in TARGET_PROCESSES]
@@ -1488,7 +1391,7 @@ def main_loop():
         state = load_state()
         save_state(state)
 
-    while True:
+    while not _shutdown.is_set():
         try:
             today = datetime.date.today()
             # Use effective limit (base + bonus) - must read state under lock to be consistent
@@ -1588,19 +1491,9 @@ def main_loop():
                             style=0x30  # MB_ICONWARNING
                         )
 
-                    # If we just hit the limit during this tick, close now
+                    # If we just hit the limit during this tick, close now (no popup - window shows countdown)
                     if used >= limit:
                         log(f"Time up! Closing Albion Online (used {format_minutes(used)})")
-                        show_warning_async(
-                            "Albion Online - Time's up!",
-                            f"Your time is up for today!\n\n"
-                            f"Limit: {limit//60} minutes ({'Weekend' if is_weekend(today) else 'Weekday'})\n"
-                            f"Closing Albion Online now.\n"
-                            f"See you tomorrow!",
-                            style=0x10
-                        )
-                        # Give 5 seconds to read message before kill? Kill immediately after
-                        time.sleep(3)
                         kill_albion()
                         with _state_lock:
                             state["blocked_notified"] = True
@@ -1616,7 +1509,7 @@ def main_loop():
                 pass
 
             # Handle midnight reset: if date changed while sleeping, next iteration will reset via load_state
-            time.sleep(POLL_INTERVAL_SEC)
+            _shutdown.wait(POLL_INTERVAL_SEC)
 
         except KeyboardInterrupt:
             log("Interrupted by user, exiting")
@@ -1628,32 +1521,10 @@ def main_loop():
             time.sleep(POLL_INTERVAL_SEC)
 
 if __name__ == "__main__":
-    # Handle --show-time: desktop icon - check for updates with UI, then show time window
+    # Desktop icon (--show-time) just starts the normal visible app. Window visible = running.
+    # Silent update check only (no popup); result goes to limiter.log and window version label.
     if "--show-time" in sys.argv or "--time" in sys.argv:
-        try:
-            # Check for updates first and show result (every time desktop icon is clicked)
-            try:
-                self_update(show_ui=True)
-            except SystemExit:
-                # self_update launched new exe - new process will show window
-                sys.exit(0)
-            except Exception:
-                pass
-            # No mutex needed for just showing time window
-            show_time_window()
-        except SystemExit:
-            raise
-        except Exception:
-            try:
-                with _state_lock:
-                    s = load_state()
-                    limit = get_effective_limit_sec(datetime.date.today(), s)
-                    used = int(s.get("used_seconds", 0))
-                    remaining = max(0, limit - used)
-                show_message("PlayLimit - Time Left", f"Used: {format_minutes(used)}\nLimit: {format_minutes(limit)}\nLeft: {format_minutes(remaining)}", 0x40)
-            except Exception:
-                pass
-        sys.exit(0)
+        sys.argv = [a for a in sys.argv if a not in ("--show-time", "--time")]
 
     # --- Auto-update BEFORE mutex (so new exe can start) ---
     try:
