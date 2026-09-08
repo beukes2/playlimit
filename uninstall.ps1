@@ -15,7 +15,8 @@ if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 # Stop task
 try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null; Write-Host "Stopped task" } catch {}
 
-# Kill running limiter python processes (only ours)
+# Kill running limiter (exe + any python fallback)
+try { Get-Process PlayLimit* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Write-Host "Stopped PlayLimit" } catch {}
 try {
     Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*AlbionLimiter*" -or $_.CommandLine -like "*albion_limiter*" } | Stop-Process -Force -ErrorAction SilentlyContinue
     # Brute force: kill any pythonw running albion_limiter.py
@@ -31,9 +32,11 @@ try {
 # Unregister task
 try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue | Out-Null; Write-Host "Removed Scheduled Task" } catch {}
 
-# Remove shortcuts
-foreach ($s in @($Startup1, $Startup2)) {
-    if (Test-Path $s) { Remove-Item $s -Force; Write-Host "Removed $s" }
+# Remove shortcuts (startup + desktop time window icon)
+$Desktop1 = Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "PlayLimit Time.lnk"
+$Desktop2 = Join-Path ([Environment]::GetFolderPath("Desktop")) "PlayLimit Time.lnk"
+foreach ($s in @($Startup1, $Startup2, $Desktop1, $Desktop2)) {
+    if ($s -and (Test-Path $s)) { Remove-Item $s -Force; Write-Host "Removed $s" }
 }
 
 # Optionally keep data dir for history, or delete

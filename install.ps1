@@ -19,20 +19,21 @@ if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit 1
 }
 
-# Check Python
+# Check Python (optional - only needed if running the .py directly; the exe is standalone)
+$HasPython = $false
 try {
     $py = Get-Command py -ErrorAction Stop
     $pyVersion = & py --version 2>&1
     Write-Host "Found Python: $pyVersion" -ForegroundColor Green
+    $HasPython = $true
 } catch {
     try {
         $py = Get-Command python -ErrorAction Stop
         $pyVersion = & python --version 2>&1
         Write-Host "Found Python: $pyVersion" -ForegroundColor Green
+        $HasPython = $true
     } catch {
-        Write-Host "ERROR: Python not found. Install Python 3.10+ from https://www.python.org and add to PATH" -ForegroundColor Red
-        pause
-        exit 1
+        Write-Host "Note: no Python found - fine, the standalone exe needs none." -ForegroundColor Yellow
     }
 }
 
@@ -54,6 +55,11 @@ Write-Host "Creating directories..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
+# Stop any running copy first (exe cannot be replaced while running)
+Write-Host "Stopping any running PlayLimit..." -ForegroundColor Yellow
+try { Get-Process PlayLimit* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Seconds 1
+
 # Copy script
 $SourceScript = Join-Path $PSScriptRoot $ScriptName
 if (-not (Test-Path $SourceScript)) {
@@ -64,24 +70,35 @@ if (-not (Test-Path $SourceScript)) {
 Copy-Item -Path $SourceScript -Destination (Join-Path $InstallDir $ScriptName) -Force
 Write-Host "Copied $ScriptName -> $InstallDir" -ForegroundColor Green
 
-# Copy exe if present (dist/PlayLimit.exe) - preferred launch method, no Python needed
+# The app RUNS from $DataDir\PlayLimit.exe (writable by standard users) so it can
+# replace itself with verified newer versions without admin. This is the live copy.
 $ExeSource = Join-Path $PSScriptRoot "dist\PlayLimit.exe"
-$ExeDest = Join-Path $InstallDir "PlayLimit.exe"
+$LiveExe = Join-Path $DataDir "PlayLimit.exe"
 $HasExe = Test-Path $ExeSource
-if ($HasExe) {
-    Copy-Item -Path $ExeSource -Destination $ExeDest -Force
-    Write-Host "Copied PlayLimit.exe -> $InstallDir (will be auto-updated from GitHub on each start)" -ForegroundColor Green
-} else {
-    # Also check root PlayLimit.exe (if user downloaded exe directly)
+if (-not $HasExe) {
     $AltExe = Join-Path $PSScriptRoot "PlayLimit.exe"
-    if (Test-Path $AltExe) {
-        Copy-Item -Path $AltExe -Destination $ExeDest -Force
-        $HasExe = $true
-        Write-Host "Copied PlayLimit.exe -> $InstallDir" -ForegroundColor Green
-    }
+    if (Test-Path $AltExe) { $ExeSource = $AltExe; $HasExe = $true }
+}
+if (-not $HasExe) {
+    Write-Host "ERROR: PlayLimit.exe not found (expected dist\PlayLimit.exe next to install.ps1)" -ForegroundColor Red
+    pause
+    exit 1
+}
+Copy-Item -Path $ExeSource -Destination $LiveExe -Force
+Write-Host "Installed PlayLimit.exe -> $DataDir (self-updates from GitHub, no admin needed)" -ForegroundColor Green
+
+# Remove legacy Program Files copy (old versions ran from here and could never self-update)
+$LegacyExe = Join-Path $InstallDir "PlayLimit.exe"
+if (Test-Path $LegacyExe) {
+    try { Remove-Item -Force $LegacyExe -ErrorAction Stop; Write-Host "Removed legacy $LegacyExe (old code deleted)" -ForegroundColor Green }
+    catch { Write-Host "Note: could not remove legacy exe (may be locked): $_" -ForegroundColor Yellow }
+}
+$LegacyVbs = Join-Path $InstallDir "launch_hidden.vbs"
+if (Test-Path $LegacyVbs) {
+    try { Remove-Item -Force $LegacyVbs -ErrorAction SilentlyContinue } catch {}
 }
 
-# Install psutil (optional but recommended) - not needed if using exe
+# Python is optional now (exe is standalone); only needed for running the .py directly
 if (-not $HasExe) {
     Write-Host "Installing dependencies (psutil)..." -ForegroundColor Yellow
     try {
@@ -94,33 +111,13 @@ if (-not $HasExe) {
     Write-Host "Exe found, skipping Python dependency install (exe is standalone)" -ForegroundColor Green
 }
 
-# Create a VBS launcher to run hidden (no console window)
-$VbsPath = Join-Path $InstallDir "launch_hidden.vbs"
-if ($HasExe) {
-    $VbsContent = @"
-Set WshShell = CreateObject("WScript.Shell")
-' Run exe hidden, no window
-WshShell.Run """$ExeDest""", 0, False
-Set WshShell = Nothing
-"@
-} else {
-    $VbsContent = @"
-Set WshShell = CreateObject("WScript.Shell")
-' Run with pythonw hidden, no window
-WshShell.Run """$PythonW"" ""$InstallDir\$ScriptName""", 0, False
-Set WshShell = Nothing
-"@
-}
-Set-Content -Path $VbsPath -Value $VbsContent -Encoding ASCII
-Write-Host "Created hidden launcher: $VbsPath" -ForegroundColor Green
-
 # Create Scheduled Task - runs at logon + at startup as the logged-on user (visible window, no auto-restart)
 Write-Host "Creating Scheduled Task '$TaskName'..." -ForegroundColor Yellow
 
 # Remove old task if exists
 try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
 
-$Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$VbsPath`""
+$Action = New-ScheduledTaskAction -Execute "$LiveExe"
 $Trigger1 = New-ScheduledTaskTrigger -AtLogOn
 $Trigger2 = New-ScheduledTaskTrigger -AtStartup
 # NOTE: no 5-minute watchdog trigger on purpose. Window visible = running, closed = fully gone.
@@ -138,14 +135,14 @@ $Settings.AllowHardTerminate = $true  # Parent can End Task via Task Manager; cl
 $Created = $false
 try {
     $Principal = New-ScheduledTaskPrincipal -GroupId "Users" -RunLevel Highest
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal -Description "PlayLimit GUI - 10min limit, browser block, visible window - Ctrl+Shift+D disables and exits" | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal -Description "PlayLimit GUI - visible window, self-updating - Ctrl+Shift+D disables and exits" | Out-Null
     Write-Host "Scheduled Task created as Users (visible window, no auto-restart on close)!" -ForegroundColor Green
     $Created = $true
 } catch {
     Write-Host "Users task failed ($_), trying current user..." -ForegroundColor Yellow
     $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $Principal2 = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Highest
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "PlayLimit GUI - 10min limit, browser block, visible window" | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger1,$Trigger2 -Settings $Settings -Principal $Principal2 -Description "PlayLimit GUI - visible window, self-updating" | Out-Null
     Write-Host "Scheduled Task created (user-specific, visible, no auto-restart)!" -ForegroundColor Green
     $Created = $true
 }
@@ -157,9 +154,8 @@ $ShortcutPath = Join-Path $StartupDir "AlbionLimiter.lnk"
 try {
     $WshShell = New-Object -ComObject WScript.Shell
     $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
-    $Shortcut.TargetPath = "wscript.exe"
-    $Shortcut.Arguments = "`"$VbsPath`""
-    $Shortcut.WorkingDirectory = $InstallDir
+    $Shortcut.TargetPath = "$LiveExe"
+    $Shortcut.WorkingDirectory = $DataDir
     $Shortcut.Description = "AlbionLimiter - Parental Control"
     $Shortcut.Save()
     Write-Host "Startup shortcut created: $ShortcutPath" -ForegroundColor Green
@@ -175,14 +171,14 @@ try {
     $WshShell2 = New-Object -ComObject WScript.Shell
     $Shortcut2 = $WshShell2.CreateShortcut($DesktopPath)
     if ($HasExe) {
-        $Shortcut2.TargetPath = $ExeDest
+        $Shortcut2.TargetPath = "$LiveExe"
         $Shortcut2.Arguments = "--show-time"
-        $Shortcut2.IconLocation = $ExeDest
+        $Shortcut2.IconLocation = "$LiveExe"
     } else {
         $Shortcut2.TargetPath = $PythonW
         $Shortcut2.Arguments = "`"$InstallDir\$ScriptName`" --show-time"
     }
-    $Shortcut2.WorkingDirectory = $InstallDir
+    $Shortcut2.WorkingDirectory = $DataDir
     $Shortcut2.Description = "PlayLimit - Show remaining time"
     $Shortcut2.Save()
     Write-Host "Desktop icon created: $DesktopPath (double-click to see time left)" -ForegroundColor Green
@@ -203,28 +199,27 @@ try {
 Write-Host "Starting limiter now..." -ForegroundColor Yellow
 try {
     Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    # Also run immediately via wscript for instant effect
-    Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -WindowStyle Hidden
+    # Also run immediately for instant effect
+    Start-Process "$LiveExe" -WindowStyle Hidden
     Write-Host "Limiter started!" -ForegroundColor Green
 } catch {
     Write-Host "Task start warning: $_" -ForegroundColor Yellow
-    Start-Process "wscript.exe" -ArgumentList "`"$VbsPath`"" -WindowStyle Hidden
+    Start-Process "$LiveExe" -WindowStyle Hidden
 }
 
 Write-Host ""
 Write-Host "=== INSTALL COMPLETE ===" -ForegroundColor Cyan
 Write-Host "Limits: Mon-Thu 45 minutes, Fri-Sun 120 minutes" -ForegroundColor White
-Write-Host "Warning: 5 minutes before limit (popup)" -ForegroundColor White
+Write-Host "Runs from: $LiveExe (self-updates from GitHub, no admin needed)" -ForegroundColor White
 Write-Host "Behavior: closes Albion + blocks reopen until midnight, browser block ON (chrome/edge/firefox/brave/opera)" -ForegroundColor White
-Write-Host "Hotkeys: Ctrl+Alt+T = +15 min today, Ctrl+Shift+D = DISABLE PlayLimit" -ForegroundColor White
-Write-Host "Console: shows time left every 60s (cannot be closed by kids - close button disabled)" -ForegroundColor White
-Write-Host "Protection: Task restarts if killed (1 min), runs as SYSTEM if possible - kids need admin to stop" -ForegroundColor White
+Write-Host "Hotkeys: Ctrl+Alt+T = +15 min today, Ctrl+Alt+D = close, Ctrl+Shift+D = disable + exit" -ForegroundColor White
+Write-Host "Window: shows time left (X/taskbar close blocked for kids; no popups of any kind)" -ForegroundColor White
 Write-Host ""
 Write-Host "Data file: $DataDir\state.json" -ForegroundColor Gray
 Write-Host "Log file:  $DataDir\limiter.log" -ForegroundColor Gray
 Write-Host "To check status: Get-Content `"$DataDir\state.json`"" -ForegroundColor Gray
 Write-Host "To test browser block: try opening Chrome - it will be closed" -ForegroundColor Gray
-Write-Host "To disable: Press Ctrl+Shift+D (creates $DataDir\disabled.flag) or Run: schtasks /Change /TN AlbionLimiter /Disable" -ForegroundColor Gray
+Write-Host "To disable: press Ctrl+Shift+D, or run: schtasks /Change /TN AlbionLimiter /Disable" -ForegroundColor Gray
 Write-Host ""
 Write-Host "To uninstall, run uninstall.ps1 as Administrator" -ForegroundColor Yellow
 Write-Host ""

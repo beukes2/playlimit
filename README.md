@@ -31,25 +31,35 @@ Limits Albion Online playtime for kids:
 | `uninstall.ps1` | Uninstaller (run as Administrator) |
 | `README.txt` | Plain-text docs |
 
-## Auto-Update
+## Auto-Update (self-replacing exe, no admin needed)
 
-On **every start**, the program checks GitHub and self-updates:
+The app **runs from** `%ProgramData%\AlbionLimiter\PlayLimit.exe` (writable by standard
+users), so it can switch to the latest version by itself:
 
-1. Tries `git clone/pull` of `https://github.com/beukes2/playlimit` into `%ProgramData%\AlbionLimiter\repo` (writable cache)
-2. Fallback to HTTP `raw.githubusercontent.com` if `git` not available
-3. If `dist/PlayLimit.exe` on GitHub is newer, copies to `%ProgramData%\AlbionLimiter\PlayLimit.exe` and **re-launches the new exe** (Python exits)
-4. Next startups run the exe directly — `install.ps1`'s scheduled task is auto-patched to launch the exe
+1. On start (background thread, window opens first) it fetches `version.txt` from GitHub
+2. If newer: downloads `dist/PlayLimit.exe` + `dist/PlayLimit.exe.sha256`, checks size,
+   `MZ` header and SHA256 — anything failing keeps the old code, nothing is replaced
+3. The verified file is staged, then the app does **one clean hop**: a hidden helper waits
+   for our PID to exit, **moves staged over live (old bytes deleted)**, removes the
+   staged marker, and starts the new exe. Strict version increase = converges, no storm.
+4. Old temp exes (`PlayLimit_*.exe`), the legacy git cache and stale `_MEI*` dirs are
+   deleted on startup. No popups anywhere — progress goes to `limiter.log` and the new
+   window title shows the new version.
 
-Result: just `git push` a new `albion_limiter.py` + rebuilt `dist/PlayLimit.exe`, and all installs update on their next launch (no manual reinstall). If offline, it skips update and runs the cached version.
+Why the old machine kept old code: previous versions ran from `C:\Program Files\...`
+(which standard users cannot overwrite) and only *staged* downloads without ever
+switching. v1.4.0 runs from `%ProgramData%` and hops automatically.
 
-Build a new exe after changes:
+Build + publish a new version (example v1.4.0):
 ```powershell
-py -m pip install pyinstaller psutil
-py -m PyInstaller --onefile --noconsole --name PlayLimit albion_limiter.py --distpath dist
-git add albion_limiter.py dist/PlayLimit.exe
-git commit -m "update + rebuild exe"
+py -m PyInstaller --onefile --noconsole --name PlayLimit --icon playlimit.ico --version-file version_info.txt --distpath dist --workpath build --specpath . --hidden-import pystray --hidden-import PIL --hidden-import psutil albion_limiter.py
+$sha = (Get-FileHash dist\PlayLimit.exe -Algorithm SHA256).Hash
+"$sha  PlayLimit.exe" | Set-Content dist\PlayLimit.exe.sha256 -NoNewline
+git add albion_limiter.py version.txt version_info.txt dist/PlayLimit.exe dist/PlayLimit.exe.sha256
+git commit -m "v1.4.0 ..."
 git push
 ```
+`version.txt` must contain the new version (e.g. `1.4.0`) or clients will not pick it up.
 
 ## Installation
 

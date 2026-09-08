@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.3.4"
+__version__ = "1.4.0"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -104,16 +104,15 @@ LOG_FILE = DATA_DIR / "limiter.log"
 DISABLE_FLAG_FILE = DATA_DIR / "disabled.flag"
 
 # ---------- AUTO-UPDATE CONFIG ----------
+# The app RUNS from LIVE_EXE (inside DATA_DIR, writable by standard users), so it can
+# replace itself without admin. Flow: check version.txt -> download exe+sha256 ->
+# verify -> stage -> one clean hop (helper swaps files after we exit, relaunches).
+# Strict version increase + verified hash = converges, no respawn storm possible.
 AUTO_UPDATE_ENABLED = True
-REPO_URL = "https://github.com/beukes2/playlimit.git"
-REPO_BRANCH = "master"
 REPO_RAW_BASE = "https://raw.githubusercontent.com/beukes2/playlimit/master"
-GITHUB_API_COMMIT = "https://api.github.com/repos/beukes2/playlimit/commits/master"
-# Local cache for git clone (writable by standard users)
-UPDATE_CACHE_DIR = DATA_DIR / "repo"
-EXE_REPO_REL = Path("dist") / "PlayLimit.exe"
-EXE_LOCAL = DATA_DIR / "PlayLimit.exe"
-PY_REPO_NAME = "albion_limiter.py"
+LIVE_EXE = DATA_DIR / "PlayLimit.exe"
+STAGED_EXE = DATA_DIR / "PlayLimit.staged.exe"
+STAGED_VER = DATA_DIR / "PlayLimit.staged.ver"
 UPDATE_TIMEOUT_SEC = 20
 
 # Try to import psutil optionally
@@ -286,439 +285,240 @@ def _files_equal(a: Path, b: Path) -> bool:
     except Exception:
         return False
 
-def _git_available() -> bool:
+def _parse_ver(v: str):
     try:
-        subprocess.run(["git", "--version"], capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
-        return True
+        return tuple(int(x) for x in v.strip().split('.'))
     except Exception:
-        return False
+        return (0,)
 
-def _try_git_update() -> bool:
-    """Clone or pull repo into UPDATE_CACHE_DIR. Returns True if updated/ok."""
-    if not _git_available():
-        return False
+def _download_bytes(url: str, timeout: int):
+    """Download raw bytes or return None. No popups, log only."""
     try:
-        UPDATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        git_dir = UPDATE_CACHE_DIR / ".git"
-        if not git_dir.exists():
-            # clone fresh
-            log(f"Updater: cloning {REPO_URL} -> {UPDATE_CACHE_DIR}")
-            if any(UPDATE_CACHE_DIR.iterdir()):
-                # clean non-git files
-                for child in UPDATE_CACHE_DIR.iterdir():
-                    if child.name == ".git":
-                        continue
-                    try:
-                        if child.is_dir():
-                            import shutil
-                            shutil.rmtree(child)
-                        else:
-                            child.unlink()
-                    except Exception:
-                        pass
-            result = subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", REPO_BRANCH, REPO_URL, str(UPDATE_CACHE_DIR)],
-                capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            if result.returncode != 0:
-                log(f"Updater: git clone failed: {result.stderr[:300]}")
-                return False
-            log("Updater: git clone ok")
-            return True
-        else:
-            log("Updater: git fetch + reset")
-            result = subprocess.run(
-                ["git", "-C", str(UPDATE_CACHE_DIR), "fetch", "origin", REPO_BRANCH],
-                capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            if result.returncode != 0:
-                log(f"Updater: git fetch failed: {result.stderr[:300]}")
-                return False
-            result2 = subprocess.run(
-                ["git", "-C", str(UPDATE_CACHE_DIR), "reset", "--hard", f"origin/{REPO_BRANCH}"],
-                capture_output=True, text=True, timeout=UPDATE_TIMEOUT_SEC,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            if result2.returncode != 0:
-                log(f"Updater: git reset failed: {result2.stderr[:300]}")
-                return False
-            log("Updater: git pull ok")
-            return True
-    except subprocess.TimeoutExpired:
-        log("Updater: git timeout")
-        return False
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            if resp.status != 200:
+                log(f"Updater: HTTP {resp.status} for {url}")
+                return None
+            return resp.read()
     except Exception as e:
-        log(f"Updater: git error: {e}")
-        return False
+        log(f"Updater: download failed {url}: {e}")
+        return None
 
-def _try_http_update() -> bool:
-    """Fallback: download latest py + exe via raw.githubusercontent. Returns True if any file updated."""
-    import urllib.request
-    import urllib.error
-    updated = False
+def _cleanup_old_files():
+    """Delete old/stale updater leftovers so old code never accumulates on disk."""
+    # Legacy git cache dir (no longer used) - remove whole tree
     try:
-        UPDATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        py_url = f"{REPO_RAW_BASE}/{PY_REPO_NAME}"
-        py_dest = UPDATE_CACHE_DIR / PY_REPO_NAME
+        legacy_repo = DATA_DIR / "repo"
+        if legacy_repo.exists():
+            import shutil
+            shutil.rmtree(legacy_repo, ignore_errors=True)
+            log("Updater: removed legacy repo cache")
+    except Exception:
+        pass
+    # Timestamped temp exes from the old respawn-storm era + old http-simple temps
+    for pattern, older_than_sec in (("PlayLimit_*.exe", 0), ("PlayLimit_staged*.exe", 0)):
         try:
-            log(f"Updater: HTTP downloading {py_url}")
-            with urllib.request.urlopen(py_url, timeout=UPDATE_TIMEOUT_SEC) as resp:
-                data = resp.read()
-            if not py_dest.exists() or py_dest.read_bytes() != data:
-                py_dest.write_bytes(data)
-                log(f"Updater: updated {PY_REPO_NAME} via HTTP ({len(data)} bytes)")
-                updated = True
-            else:
-                log("Updater: py already latest via HTTP")
-        except Exception as e:
-            log(f"Updater: HTTP py failed: {e}")
-
-        exe_url = f"{REPO_RAW_BASE}/{EXE_REPO_REL.as_posix()}"
-        exe_dest = UPDATE_CACHE_DIR / EXE_REPO_REL
-        exe_dest.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            log(f"Updater: HTTP checking exe {exe_url}")
-            with urllib.request.urlopen(exe_url, timeout=UPDATE_TIMEOUT_SEC) as resp:
-                if resp.status == 200:
-                    data = resp.read()
-                    if len(data) < 1000:
-                        log("Updater: exe not found on remote (small file)")
-                    else:
-                        if not exe_dest.exists() or exe_dest.read_bytes() != data:
-                            exe_dest.write_bytes(data)
-                            log(f"Updater: updated exe via HTTP ({len(data)} bytes)")
-                            updated = True
-                        else:
-                            log("Updater: exe already latest via HTTP")
-                else:
-                    log(f"Updater: exe HTTP status {resp.status}")
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                log("Updater: no exe on remote yet (404)")
-            else:
-                log(f"Updater: HTTP exe error {e.code}: {e.reason}")
-        except Exception as e:
-            log(f"Updater: HTTP exe failed: {e}")
-    except Exception as e:
-        log(f"Updater: HTTP fallback error: {e}")
-    return updated
-
-def _launch_latest_exe_and_exit():
-    """If exe exists in cache/local, launch it and exit current process. Returns True if launched."""
-    try:
-        # Cleanup old timestamped temp exes from previous buggy versions (keep at most 1 latest)
-        try:
-            for p in DATA_DIR.glob("PlayLimit_*.exe"):
+            for p in DATA_DIR.glob(pattern):
                 try:
-                    # Keep only the newest one from last 5 minutes, delete older
-                    if time.time() - p.stat().st_mtime > 300:
-                        p.unlink(missing_ok=True)
-                        log(f"Updater: cleaned old temp exe {p.name}")
+                    # Never delete the live exe or a fresh staged file
+                    if p.resolve() == LIVE_EXE.resolve():
+                        continue
+                    if p == STAGED_EXE and p.exists():
+                        continue
+                    p.unlink(missing_ok=True)
+                    log(f"Updater: cleaned old file {p.name}")
                 except Exception:
                     pass
-            # If too many temp exes, clean all
-            temps = list(DATA_DIR.glob("PlayLimit_*.exe"))
-            if len(temps) > 5:
-                for p in temps:
-                    try:
-                        p.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                log(f"Updater: cleaned {len(temps)} temp exes (storm)")
         except Exception:
             pass
-
-        exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
-        exe_local = EXE_LOCAL
-        candidate = None
-
-        # If we are already running the cached exe (frozen), check if we are latest - if so, no need to update local
-        current = Path(sys.executable).resolve() if getattr(sys, 'frozen', False) else None
-        if current and exe_in_cache.exists():
+    # Stale _MEI temp dirs from killed onefile runs (older than 1 day only; active one is locked anyway)
+    try:
+        import tempfile
+        tmpd = Path(tempfile.gettempdir())
+        now = time.time()
+        for p in tmpd.glob("_MEI*"):
             try:
-                if _files_equal(current, exe_in_cache):
-                    log("Updater: current exe is already latest (matches cache) - no update needed")
-                    return False
+                if p.is_dir() and now - p.stat().st_mtime > 86400:
+                    import shutil
+                    shutil.rmtree(p, ignore_errors=True)
+                    log(f"Updater: cleaned stale temp {p.name}")
             except Exception:
                 pass
+    except Exception:
+        pass
 
-        if exe_in_cache.exists() and exe_in_cache.stat().st_size > 1024 * 100:
-            # Check if local needs update
-            needs_update = False
+def _remote_version():
+    """Fetch version.txt from GitHub. Returns version string or None."""
+    data = _download_bytes(f"{REPO_RAW_BASE}/version.txt", 10)
+    if not data:
+        return None
+    try:
+        return data.decode('utf-8', errors='ignore').strip()
+    except Exception:
+        return None
+
+def _check_and_stage_update():
+    """Download + verify a newer exe into STAGED_EXE/STAGED_VER. Returns staged version or None.
+
+    Verification (all must pass): size > 100KB, MZ header, sha256 matches
+    dist/PlayLimit.exe.sha256 from GitHub. Old code is only ever replaced by
+    verified-newer code, never the reverse.
+    """
+    try:
+        remote_ver = _remote_version()
+        if not remote_ver:
+            return None
+        log(f"Updater: local {__version__} vs remote {remote_ver}")
+        if _parse_ver(remote_ver) <= _parse_ver(__version__):
+            log("Updater: already latest")
+            # Drop any stale staged files for versions we already passed
             try:
-                if not exe_local.exists():
-                    needs_update = True
-                elif not _files_equal(exe_in_cache, exe_local):
-                    # Size mismatch of 7 bytes is likely just rebuild timestamp, check version instead?
-                    # Consider equal if size diff < 1KB and version same? For now check hash
-                    needs_update = True
-                else:
-                    needs_update = False
+                if STAGED_VER.exists():
+                    sv = STAGED_VER.read_text(encoding="utf-8", errors="ignore").strip()
+                    if _parse_ver(sv) <= _parse_ver(__version__):
+                        STAGED_EXE.unlink(missing_ok=True)
+                        STAGED_VER.unlink(missing_ok=True)
+                        log("Updater: removed stale staged update")
             except Exception:
-                needs_update = True
+                pass
+            return None
 
-            if needs_update:
-                try:
-                    exe_local.parent.mkdir(parents=True, exist_ok=True)
-                    import shutil
-                    # Try direct copy to local - if locked, don't create timestamped storm, just use cache
-                    if exe_local.exists():
-                        try:
-                            # Try to unlink, if locked, fallback to launching cache directly
-                            exe_local.unlink()
-                            shutil.copy2(exe_in_cache, exe_local)
-                            candidate = exe_local
-                            log(f"Updater: updated local exe {candidate} (was locked before, now ok)")
-                        except Exception as e:
-                            # Locked - don't create timestamped exe, just launch cache directly
-                            if "WinError 32" in str(e) or "being used" in str(e).lower():
-                                log(f"Updater: local exe locked ({e}), launching cache directly without temp copy")
-                                candidate = exe_in_cache
-                            else:
-                                log(f"Updater: copy failed ({e}), launching cache")
-                                candidate = exe_in_cache
-                    else:
-                        shutil.copy2(exe_in_cache, exe_local)
-                        candidate = exe_local
-                        log(f"Updater: copied latest exe to {candidate}")
-                except Exception as e:
-                    log(f"Updater: copy exe failed: {e}")
-                    candidate = exe_in_cache
-            else:
-                candidate = exe_local
+        log(f"Updater: new version {remote_ver} available, downloading...")
+        exe_data = _download_bytes(f"{REPO_RAW_BASE}/dist/PlayLimit.exe", 60)
+        if not exe_data or len(exe_data) < 1024 * 100:
+            log("Updater: exe download failed or too small, abort")
+            return None
+        if exe_data[:2] != b'MZ':
+            log("Updater: download is not a Windows exe (bad MZ), abort")
+            return None
+        sha_data = _download_bytes(f"{REPO_RAW_BASE}/dist/PlayLimit.exe.sha256", 15)
+        if sha_data:
+            try:
+                import hashlib
+                expected = sha_data.decode('utf-8', errors='ignore').split()[0].strip().lower()
+                actual = hashlib.sha256(exe_data).hexdigest()
+                if actual != expected:
+                    log(f"Updater: SHA256 MISMATCH (got {actual[:12]}..., want {expected[:12]}...), abort - old code kept")
+                    return None
+                log("Updater: SHA256 verified")
+            except Exception as e:
+                log(f"Updater: sha check error {e}, abort")
+                return None
+        else:
+            log("Updater: no sha file on remote, abort (refusing unverified exe)")
+            return None
 
-        if candidate is None and exe_in_cache.exists():
-            candidate = exe_in_cache
+        STAGED_EXE.parent.mkdir(parents=True, exist_ok=True)
+        STAGED_EXE.write_bytes(exe_data)
+        STAGED_VER.write_text(remote_ver, encoding="utf-8")
+        log(f"Updater: v{remote_ver} downloaded+verified, staged ({len(exe_data)} bytes)")
+        return remote_ver
+    except Exception as e:
+        log(f"Updater: stage error: {e}")
+        return None
 
-        if candidate is None or not candidate.exists():
-            log("Updater: no exe found, staying on Python")
-            return False
+def _do_update_hop(staged_ver: str):
+    """Swap the verified staged exe over the live exe and restart once.
 
-        if current and candidate.resolve() == current.resolve():
-            log("Updater: already running latest exe")
-            return False
-
-        # No auto-relaunch: never spawn a successor process (that caused the respawn storm).
-        # If an update was downloaded, it applies on the NEXT manual start. Current visible
-        # instance keeps running so the window never flashes/disappears.
-        if current and candidate.resolve() != current.resolve():
-            log(f"Updater: newer exe staged at {candidate} (current {current.name}) - will apply on next start, no relaunch")
-        elif not getattr(sys, 'frozen', False) and candidate.exists():
-            log(f"Updater: exe staged at {candidate} for next start (running as Python, no relaunch)")
-        return False
+    A running Windows exe cannot replace its own file, so a tiny hidden helper
+    waits for our PID to exit, moves staged->live (old bytes gone), deletes the
+    staged marker, and starts the live exe again. Exactly one hop per newer
+    version (strict version increase + verified hash), so no storm is possible.
+    No popups - progress goes to limiter.log and the new window title.
+    """
+    try:
+        _spawn_hop_helper_only(staged_ver)
+        log(f"Updater: exiting to apply v{staged_ver} (old code replaced)")
+        request_shutdown(f"applying update v{staged_ver}")
     except SystemExit:
         raise
     except Exception as e:
-        log(f"Updater: launch failed: {e}")
+        log(f"Updater: hop failed: {e}")
         import traceback
         log(traceback.format_exc())
-        return False
 
-def _update_scheduled_task_to_exe(exe_path: Path):
-    """Try to update the scheduled task to launch exe directly (best-effort, needs admin)."""
+def _spawn_hop_helper_only(staged_ver: str):
+    """Spawn the swap helper without touching app state (for pre-main-loop use)."""
+    import base64
+    me = os.getpid()
+    live = str(LIVE_EXE)
+    staged = str(STAGED_EXE)
+    sver = str(STAGED_VER)
+    ps = (
+        f"$me={me}; "
+        f"$live='{live}'; $staged='{staged}'; $sver='{sver}'; "
+        f"while (Get-Process -Id $me -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; "
+        f"Move-Item -LiteralPath $staged -Destination $live -Force; "
+        f"Remove-Item -LiteralPath $sver -Force -ErrorAction SilentlyContinue; "
+        f"Start-Process -FilePath $live"
+    )
+    b64 = base64.b64encode(ps.encode('utf-16-le')).decode('ascii')
+    DETACHED = 0x00000008
+    NEW_GROUP = 0x00000200
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", b64],
+        creationflags=DETACHED | NEW_GROUP,
+        close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    log(f"Updater: hop helper started for v{staged_ver}")
+
+def _pending_staged_version():
+    """Return staged version string if a valid pending update exists, else None."""
     try:
-        import subprocess
-        task_name = "AlbionLimiter"
-        result = subprocess.run(["schtasks", "/Query", "/TN", task_name], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        if result.returncode != 0:
-            return
-        ps_cmd = f"""
-$Action = New-ScheduledTaskAction -Execute '{exe_path}'
-$Task = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction Stop
-$Task.Actions = @($Action)
-Set-ScheduledTask -TaskName '{task_name}' -Action $Action | Out-Null
-"""
-        subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-        log(f"Updater: scheduled task updated to {exe_path}")
-    except Exception as e:
-        log(f"Updater: task update error: {e}")
+        if not STAGED_EXE.exists() or not STAGED_VER.exists():
+            return None
+        sv = STAGED_VER.read_text(encoding="utf-8", errors="ignore").strip()
+        if not sv or _parse_ver(sv) <= _parse_ver(__version__):
+            return None
+        if STAGED_EXE.stat().st_size < 1024 * 100:
+            return None
+        return sv
+    except Exception:
+        return None
 
 def _http_simple_update(show_ui=False):
-    """Simple HTTP version check: fetch version.txt, compare, download exe if newer. Most reliable, no git needed."""
-    try:
-        import urllib.request
-        # Fetch remote version
-        ver_url = f"{REPO_RAW_BASE}/version.txt"
-        log(f"Updater: HTTP simple check {ver_url}")
-        try:
-            with urllib.request.urlopen(ver_url, timeout=10) as resp:
-                remote_ver = resp.read().decode('utf-8', errors='ignore').strip()
-        except Exception as e:
-            log(f"Updater: version fetch failed: {e}")
-            return False
-
-        # Compare versions (simple tuple)
-        def parse(v):
-            try:
-                return tuple(int(x) for x in v.strip().split('.'))
-            except Exception:
-                return (0,)
-        local = parse(__version__)
-        remote = parse(remote_ver)
-        log(f"Updater: local {__version__} vs remote {remote_ver}")
-        if remote <= local:
-            log("Updater: already latest (HTTP simple)")
-            return False
-
-        log(f"Updater: new version {remote_ver} available, downloading exe...")
-        exe_url = f"{REPO_RAW_BASE}/dist/PlayLimit.exe"
-        # Download to temp
-        import tempfile
-        tmp_path = Path(tempfile.gettempdir()) / f"PlayLimit_{remote_ver.replace('.','_')}.exe"
-        try:
-            with urllib.request.urlopen(exe_url, timeout=30) as resp:
-                data = resp.read()
-            if len(data) < 1024*100:
-                log("Updater: downloaded exe too small, abort")
-                return False
-            tmp_path.write_bytes(data)
-            log(f"Updater: downloaded {len(data)} bytes to {tmp_path}")
-        except Exception as e:
-            log(f"Updater: exe download failed: {e}")
-            return False
-
-        # Try to replace local exe - NEVER relaunch (no storm). Stage for next manual start.
-        try:
-            # If running as exe, we can't overwrite ourselves while running; just stage the
-            # download next to the cache and log it. No Popen, no exit - visible window keeps running.
-            if getattr(sys, 'frozen', False):
-                try:
-                    staged = UPDATE_CACHE_DIR / f"PlayLimit_{remote_ver.replace('.','_')}_staged.exe"
-                    staged.parent.mkdir(parents=True, exist_ok=True)
-                    import shutil
-                    shutil.copy2(tmp_path, staged)
-                    log(f"Updater: v{remote_ver} staged at {staged} - restart the app manually to use it (no auto-relaunch)")
-                except Exception as e:
-                    log(f"Updater: stage failed: {e}")
-                # show_ui is ignored - no popups allowed; window label shows version instead
-                return True
-            else:
-                # Running as python - just update local exe files
-                try:
-                    EXE_LOCAL.parent.mkdir(parents=True, exist_ok=True)
-                    import shutil
-                    try:
-                        EXE_LOCAL.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    shutil.copy2(tmp_path, EXE_LOCAL)
-                    log(f"Updater: updated {EXE_LOCAL} to v{remote_ver}")
-                    pf_exe = Path("C:/Program Files/AlbionLimiter/PlayLimit.exe")
-                    try:
-                        pf_exe.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            pf_exe.unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                        shutil.copy2(tmp_path, pf_exe)
-                        log(f"Updater: updated {pf_exe}")
-                    except Exception:
-                        pass
-                    # Update cache too
-                    try:
-                        cache_exe = UPDATE_CACHE_DIR / EXE_REPO_REL
-                        cache_exe.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(tmp_path, cache_exe)
-                    except Exception:
-                        pass
-                    if show_ui:
-                        show_message("PlayLimit Update", f"Updated to v{remote_ver}!\nPlease restart PlayLimit.", 0x40)
-                    return True
-                except Exception as e:
-                    log(f"Updater: copy failed: {e}")
-                    return False
-        except SystemExit:
-            raise
-        except Exception as e:
-            log(f"Updater: http simple failed: {e}")
-            return False
-        return True
-    except Exception as e:
-        log(f"Updater: http simple error: {e}")
-        return False
+    """Deprecated stub - superseded by _check_and_stage_update(). Kept so no caller breaks. Never spawns processes."""
+    return False
 
 def self_update(show_ui=False):
-    """Called on startup (and on tray click). Pulls latest from git, syncs exe, and maybe relaunches.
-       If show_ui=True, shows a popup with result (for manual tray click)."""
+    """Self-update entry point (runs in background thread, also on tray click).
+
+    - show_ui is accepted but IGNORED: no popups allowed, ever. Status goes to
+      limiter.log and is visible in the app window title (new version after hop).
+    - Cleans stale files, applies any pending staged update via one hop, then
+      checks GitHub for a newer version and hops if one is verified.
+    """
     if not AUTO_UPDATE_ENABLED:
-        if show_ui:
-            show_message("PlayLimit Update", "Auto-update is disabled.", 0x40)
+        log("Updater: disabled")
         return
     try:
         log("=== Auto-update check ===")
-        # First try simple HTTP version check (most reliable, no git, no storm, no relaunch)
-        if _http_simple_update(show_ui=show_ui):
-            log("Updater: HTTP simple staged an update for next manual start (no relaunch)")
-            return
+        _cleanup_old_files()
 
-        # Remember current exe hash before update to detect if update actually happened
-        before_hash = None
+        # 1) Pending staged update from a previous run? Apply with one hop.
         try:
-            exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
-            if exe_in_cache.exists():
-                before_hash = _sha256_file(exe_in_cache)
-        except Exception:
-            pass
-
-        ok = False
-        if _try_git_update():
-            ok = True
-            log("Updater: git update done")
-        else:
-            log("Updater: git failed or not available, trying HTTP")
-            if _try_http_update():
-                ok = True
-                log("Updater: HTTP update done")
-            else:
-                log("Updater: HTTP also failed or no update needed")
-
-        # Check if exe actually changed
-        after_hash = None
-        updated = False
-        try:
-            exe_in_cache = UPDATE_CACHE_DIR / EXE_REPO_REL
-            if exe_in_cache.exists():
-                after_hash = _sha256_file(exe_in_cache)
-                if before_hash and after_hash and before_hash != after_hash:
-                    updated = True
-                    log(f"Updater: exe changed {before_hash[:8]} -> {after_hash[:8]}")
-                elif before_hash is None and after_hash:
-                    # first time cache, treat as updated if local exe differs
-                    if EXE_LOCAL.exists():
-                        try:
-                            if not _files_equal(exe_in_cache, EXE_LOCAL):
-                                updated = True
-                        except Exception:
-                            pass
-                    else:
-                        updated = True
-        except Exception:
-            pass
-
-        # show_ui popups removed - no popups allowed. Update status is visible in the
-        # app window title/version label and in limiter.log only.
-        if updated:
-            log("Updater: staged update for next manual start (no relaunch, no popup)")
-
-        try:
-            running_py = Path(__file__).resolve()
-            cached_py = UPDATE_CACHE_DIR / PY_REPO_NAME
-            if cached_py.exists() and running_py.exists():
-                if not _files_equal(cached_py, running_py):
-                    try:
-                        import shutil
-                        shutil.copy2(cached_py, running_py)
-                        log(f"Updater: updated running py {running_py}")
-                    except PermissionError:
-                        log(f"Updater: no permission to update {running_py}, will use cached copy next time via exe")
-                    except Exception as e:
-                        log(f"Updater: py copy failed: {e}")
+            sv = _pending_staged_version()
+            if sv:
+                log(f"Updater: pending staged v{sv} found at startup - applying with one hop")
+                _do_update_hop(sv)
+                return
+        except SystemExit:
+            raise
         except Exception as e:
-            log(f"Updater: py sync error: {e}")
+            log(f"Updater: pending-stage error: {e}")
 
-        log("=== Auto-update done ===")
+        # 2) Check GitHub for newer, download+verify+stage, then hop once.
+        try:
+            sv = _check_and_stage_update()
+            if sv:
+                _do_update_hop(sv)
+                return
+        except SystemExit:
+            raise
+        except Exception as e:
+            log(f"Updater: stage error: {e}")
+
+        log("=== Auto-update done (already latest) ===")
     except SystemExit:
         raise
     except Exception as e:
@@ -1588,5 +1388,19 @@ if __name__ == "__main__":
             os._exit(0)
     except Exception:
         pass
+
+    # Pending staged update from a previous run? Apply NOW with one hop before
+    # opening anything, so this process never runs stale code. No threads started
+    # yet, so a plain sys.exit here is clean.
+    try:
+        sv = _pending_staged_version()
+        if sv:
+            log(f"Updater: pending staged v{sv} at startup - hopping to latest before opening")
+            _spawn_hop_helper_only(sv)
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"Updater: startup pending-stage error (non-fatal): {e}")
 
     main_loop()
