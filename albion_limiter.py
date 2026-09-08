@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -126,7 +126,10 @@ except ImportError:
 def log(msg: str):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass  # stdout broken during teardown (frozen exe) - file log below still works
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -185,9 +188,9 @@ def disable_app():
     except Exception as e:
         log(f"Disable task failed: {e}")
     request_shutdown("disabled via Ctrl+Shift+D")
-    # Give UI a moment to tear down, then force exit so no thread lingers
-    time.sleep(0.5)
-    os._exit(0)
+    # No os._exit: hotkey loop below sees _shutdown and breaks, enforcement loop
+    # exits, Tk mainloop already destroyed -> clean interpreter teardown so the
+    # PyInstaller temp dir removes cleanly (no _MEI warning popup).
 
 def enable_app():
     global APP_DISABLED
@@ -808,7 +811,7 @@ def hotkey_listener_thread():
 
     try:
         msg = ctypes.wintypes.MSG()
-        while True:
+        while not _shutdown.is_set():
             ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
             if ret == 0:  # WM_QUIT
                 break
@@ -837,8 +840,7 @@ def hotkey_listener_thread():
                 elif msg.wParam == HOTKEY_ID_CLOSE:
                     log("Hotkey pressed: Ctrl+Alt+D - CLOSING PlayLimit (no popup, full exit)")
                     request_shutdown("closed via Ctrl+Alt+D")
-                    time.sleep(0.5)
-                    os._exit(0)
+                    # No os._exit (see disable_app): loops observe _shutdown and unwind cleanly.
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
@@ -1068,16 +1070,31 @@ def show_time_window():
             root.protocol("WM_DELETE_WINDOW", on_close)
         except Exception:
             pass
-        # Grey out / remove Close from the window system menu (X button + taskbar menu)
-        try:
-            root.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-            if hwnd:
+        # Grey out / remove Close from the window system menu (X button + taskbar menu).
+        # NOTE: root.winfo_id() already IS the HWND for a Tk toplevel on Windows -
+        # GetParent() on it returns the desktop (wrong menu), so use it directly.
+        # Re-applied on timers: Tk can recreate the system menu after mapping.
+        def _strip_close(tag="now"):
+            try:
+                hwnd = root.winfo_id()
+                if not hwnd:
+                    return
                 hMenu = ctypes.windll.user32.GetSystemMenu(hwnd, 0)
                 if hMenu:
                     ctypes.windll.user32.DeleteMenu(hMenu, 0xF060, 0x0)  # SC_CLOSE
+                    ctypes.windll.user32.EnableMenuItem(hMenu, 0xF060, 0x00000001)  # MF_GRAYED
                     ctypes.windll.user32.DrawMenuBar(hwnd)
-                    log("Window: system-menu Close disabled")
+                    if tag == "now":
+                        log("Window: system-menu Close disabled")
+            except Exception as e:
+                if tag == "now":
+                    log(f"Window: could not disable system-menu Close: {e}")
+        try:
+            root.update_idletasks()
+            root.update()
+            _strip_close("now")
+            root.after(500, lambda: _strip_close("t500"))
+            root.after(2000, lambda: _strip_close("t2000"))
         except Exception as e:
             log(f"Window: could not disable system-menu Close: {e}")
 
