@@ -31,7 +31,21 @@ for name, cmd, anc, exp, why in cases:
     if not ok:
         fails += 1
     print(("PASS" if ok else "FAIL"), f"{name} -> {got} (want {exp}) [{why}]")
-print("FAILURES:", fails)
+print("MATCHER FAILURES:", fails)
+
+# tasklist union pass (elevated-blindness cover)
+t="@\"System Idle Process\",\"0\",\"Services\",\"0\",\"8 K\"\n\"Albion-Online.exe\",\"1234\",\"Console\",\"1\",\"100 K\"\n\"notepad.exe\",\"5678\",\"Console\",\"1\",\"10 K\""
+hits = al._tasklist_game_hits(t)
+t_ok = "albion-online.exe" in hits and "notepad.exe" not in hits
+print(("PASS" if t_ok else "FAIL"), f"tasklist hits={sorted(hits)}")
+if not t_ok:
+    fails += 1
+t2 = al._tasklist_game_hits('"javaw.exe","9999","Console","1","200 K"')
+t2_ok = len(t2) == 0
+print(("PASS" if t2_ok else "FAIL"), f"tasklist ignores bare javaw: {sorted(t2)}")
+if not t2_ok:
+    fails += 1
+print("TOTAL FAILURES:", fails)
 
 # live environment checks
 import datetime

@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1505,8 +1505,33 @@ def _ancestor_names(proc, max_depth=6):
         pass
     return names
 
+# Substring hits for the tasklist pass (elevated processes hide cmdline/parents
+# from psutil, but tasklist still shows image names - never java hosts here).
+TASKLIST_GAME_SUBSTRINGS = ["albion", "minecraft", "roblox", "fortnite", "valorant",
+                            "leagueoflegends", "leagueclient"]
+
+def _tasklist_game_hits(text: str):
+    """Names/substrings hit in tasklist output. Pure function (unit-testable)."""
+    hits = set()
+    try:
+        low = (text or "").lower()
+        for n in GAME_PROCESSES_SET:
+            if n and n in low:
+                hits.add(n)
+        for sub in TASKLIST_GAME_SUBSTRINGS:
+            if sub in low:
+                hits.add(sub)
+    except Exception:
+        pass
+    return hits
+
 def get_running_games():
-    """Sorted display names of currently running games (shared 1-hour budget)."""
+    """Sorted display names of currently running games (shared 1-hour budget).
+
+    Unions psutil (exact + Steam-ancestry + Minecraft-java rules) with a tasklist
+    name pass, because elevated/protected processes are invisible to psutil for a
+    standard user but their image names still show in tasklist.
+    """
     found = {}
     if HAS_PSUTIL:
         try:
@@ -1518,23 +1543,22 @@ def get_running_games():
                         found[p.pid] = name
                 except Exception:
                     continue
-            return sorted(found.values(), key=str.lower)
         except Exception as e:
             log(f"psutil error: {e}")
 
-    # Fallback: tasklist CSV substring match on known names (no ancestry info)
+    # tasklist union pass (catches elevated games psutil cannot inspect)
     try:
         out = subprocess.check_output('tasklist /FO CSV /NH', shell=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        low = out.lower()
-        for n in GAME_PROCESSES_SET:
-            if n in low:
-                found[n] = n
-        if "albion" in low:
-            found["albion"] = "albion"
-        return sorted(found.values(), key=str.lower)
+        for hit in _tasklist_game_hits(out):
+            found[hit] = hit
     except Exception as e:
         log(f"tasklist check failed: {e}")
-        return []
+    names = sorted(found.values(), key=str.lower)
+    # Drop bare substring tokens shadowed by an exact exe name (avoids dup display)
+    exact = [n for n in names if n.lower().endswith('.exe')]
+    subs = [n for n in names if not n.lower().endswith('.exe')]
+    subs = [s for s in subs if not any(s in e.lower() for e in exact)]
+    return sorted(exact + subs, key=str.lower)
 
 def is_albion_running() -> bool:
     """Backwards-compat alias: True when ANY watched game is running (shared budget)."""
@@ -1655,7 +1679,6 @@ def kill_games():
                 except Exception as e:
                     log(f"Kill failed PID {p.pid}: {e}")
                 killed = True
-        return killed
     else:
         # Fallback: taskkill known names
         try:
@@ -1665,10 +1688,51 @@ def kill_games():
             # generic albion kill for any remaining variant
             subprocess.run('taskkill /F /FI "IMAGENAME eq Albion*" /T', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             log("taskkill executed")
-            return True
+            killed = True
         except Exception as e:
             log(f"taskkill failed: {e}")
             return False
+    # Sweep for elevated/inaccessible games psutil could see but not touch
+    # (tasklist names are visible even when the process resists inspection).
+    # Never sweep generic java hosts - only exact known exes + family filters.
+    try:
+        names = set()
+        try:
+            for n in get_running_games():
+                nl = (n or "").lower()
+                if nl and nl not in JAVA_MINECRAFT_SET:
+                    names.add(nl)
+        except Exception:
+            pass
+        for n in sorted(names):
+            try:
+                if n.endswith(".exe"):
+                    r = subprocess.run(f'taskkill /F /IM "{n}" /T', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    if r.returncode == 0:
+                        killed = True
+                        log(f"Sweep: taskkill {n} (elevated/inaccessible)")
+            except Exception:
+                pass
+        for fam in ("Albion*", "Minecraft*", "Roblox*", "Fortnite*", "Valorant*", "League*"):
+            try:
+                base = fam[:-1].lower()
+                if any(base in n for n in names):
+                    r = subprocess.run(f'taskkill /F /FI "IMAGENAME eq {fam}" /T', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    if r.returncode == 0:
+                        killed = True
+                        log(f"Sweep: taskkill family {fam}")
+            except Exception:
+                pass
+    except Exception as e:
+        log(f"sweep error: {e}")
+    if killed:
+        try:
+            still = get_running_games()
+            if still:
+                log(f"WARNING: games still running after kill (likely elevated - run PlayLimit as Admin): {', '.join(still[:3])}")
+        except Exception:
+            pass
+    return killed
 
 def kill_albion():
     """Backwards-compat alias for kill_games()."""
