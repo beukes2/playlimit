@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1872,6 +1872,7 @@ def main_loop():
 
     while not _shutdown.is_set():
         try:
+            tick_start = time.time()
             today = datetime.date.today()
             # Use effective limit (base + bonus) - must read state under lock to be consistent
             with _state_lock:
@@ -2005,7 +2006,9 @@ def main_loop():
                 pass
 
             # Handle midnight reset: if date changed while sleeping, next iteration will reset via load_state
-            _shutdown.wait(POLL_INTERVAL_SEC)
+            # Cadence compensation: scans cost 1-2s, so wait only the remainder to
+            # keep a true 5s tick (otherwise kids silently get extra time).
+            _shutdown.wait(max(0.1, POLL_INTERVAL_SEC - (time.time() - tick_start)))
 
         except KeyboardInterrupt:
             log("Interrupted by user, exiting")
