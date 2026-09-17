@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1531,16 +1531,30 @@ def get_running_games():
     Unions psutil (exact + Steam-ancestry + Minecraft-java rules) with a tasklist
     name pass, because elevated/protected processes are invisible to psutil for a
     standard user but their image names still show in tasklist.
+
+    Performance: name-only iteration first; expensive cmdline/parent lookups only
+    for processes that are not already decided by name (keeps the 5s tick on time).
     """
     found = {}
     if HAS_PSUTIL:
         try:
-            for p in psutil.process_iter(['name', 'pid', 'cmdline']):
+            for p in psutil.process_iter(['name', 'pid']):
                 try:
                     info = p.info or {}
                     name = info.get('name') or ""
-                    if _is_game_process(name, info.get('cmdline'), _ancestor_names(p)):
-                        found[p.pid] = name
+                    nl = name.lower()
+                    if nl in GAME_PROCESSES_SET or ("albion" in nl and nl.endswith(".exe")):
+                        found[nl] = name
+                        continue
+                    if nl in STEAM_NON_GAME_SET or not nl:
+                        continue
+                    # Expensive path only for undecided processes
+                    try:
+                        cmd = p.cmdline()
+                    except Exception:
+                        cmd = []
+                    if _is_game_process(name, cmd, _ancestor_names(p)):
+                        found[nl] = name
                 except Exception:
                     continue
         except Exception as e:
@@ -1653,10 +1667,21 @@ def kill_games():
     if HAS_PSUTIL:
         targets = []
         try:
-            for p in psutil.process_iter(['name', 'pid', 'cmdline']):
+            for p in psutil.process_iter(['name', 'pid']):
                 try:
                     info = p.info or {}
-                    if _is_game_process(info.get('name') or "", info.get('cmdline'), _ancestor_names(p)):
+                    name = info.get('name') or ""
+                    nl = name.lower()
+                    if nl in GAME_PROCESSES_SET or ("albion" in nl and nl.endswith(".exe")):
+                        targets.append(p)
+                        continue
+                    if nl in STEAM_NON_GAME_SET or not nl:
+                        continue
+                    try:
+                        cmd = p.cmdline()
+                    except Exception:
+                        cmd = []
+                    if _is_game_process(name, cmd, _ancestor_names(p)):
                         targets.append(p)
                 except Exception:
                     continue
