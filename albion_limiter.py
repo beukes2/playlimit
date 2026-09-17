@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Albion Online Parental Time Limiter
-- Mon-Thu: 45 minutes
-- Fri-Sun: 120 minutes (2 hours, Friday counts as weekend)
-- 5 minute warning, then closes game and blocks re-open until next day (midnight)
+PlayLimit - Parental Game Time Limiter (ALL games share one daily budget)
+- Mon-Thu: 60 minutes total gaming (Albion, Minecraft, Steam, ...)
+- Fri-Sun: 120 minutes total (Friday counts as weekend)
+- 5 minute warning, then closes games and blocks re-open until next day (midnight)
 
 Runs silently in background. Install with install.ps1 (requires Admin).
 State stored in %ProgramData%\\AlbionLimiter\\state.json
@@ -19,25 +19,57 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
-WEEKDAY_LIMIT_SEC = 45 * 60          # Mon-Thu default
-WEEKEND_LIMIT_SEC = 120 * 60         # Fri-Sun default (Friday counts as weekend)
+# Shared daily gaming budget across ALL games (Albion, Minecraft, Steam, ...).
+# Mon-Thu: 1 hour total, Fri-Sun: 120 min total (Friday counts as weekend).
+WEEKDAY_LIMIT_SEC = 60 * 60          # Mon-Thu default (shared budget)
+WEEKEND_LIMIT_SEC = 120 * 60         # Fri-Sun default (shared budget)
 WARNING_BEFORE_SEC = 5 * 60          # 5 minute warning
 POLL_INTERVAL_SEC = 5                # check every 5 seconds
 GRACEFUL_CLOSE_TIMEOUT = 15          # seconds to wait after WM_CLOSE before kill
 BONUS_STEP_SEC = 15 * 60             # added per Ctrl+Alt+T press
 
-# Albion Online process names to watch (covers launcher variants)
-TARGET_PROCESSES = [
-    "Albion-Online.exe",
-    "AlbionOnline.exe",
-    "Albion-Online Launcher.exe",
-    "AlbionLauncher.exe",
-    "Albion-Online.exe",  # duplicate for safety
+# Game processes to watch. The 1-hour (Mon-Thu) / 120-min (Fri-Sun) budget is SHARED
+# across ALL games combined - any game running burns the same daily budget.
+GAME_PROCESSES = [
+    # Albion Online (covers launcher variants)
+    "albion-online.exe",
+    "albiononline.exe",
+    "albion-online launcher.exe",
+    "albionlauncher.exe",
+    "albion-online_be.exe",  # anti-cheat sidecar = game is running
+    # Minecraft (Java + Bedrock + launcher)
+    "minecraftlauncher.exe",
+    "minecraft.windows.exe",
+    "minecraftbedrock.exe",
+    # Roblox
+    "robloxplayerbeta.exe",
+    "robloxplayerlauncher.exe",
+    # Fortnite / Epic
+    "fortniteclient-win64-shipping.exe",
+    "fortniteclient-win64-shipping_eac.exe",
+    "fortnitemain.exe",
+    # Riot
+    "leagueoflegends.exe",
+    "leagueclient.exe",
+    "valorant.exe",
+    "valorant-win64-shipping.exe",
+    # EA / Ubisoft / GOG launchers' games are caught via the Steam rule below
+    # when applicable; add more explicit names here as kids find new games.
 ]
+# Keep backwards-compat alias (same list object)
+TARGET_PROCESSES = GAME_PROCESSES
+
+# Java hosts only count when they are actually Minecraft (never any random java app)
+JAVA_MINECRAFT_NAMES = ["javaw.exe", "java.exe", "javawm.exe"]
+
+# Steam components that must NEVER count as playtime (store/chat/service idle)
+STEAM_NON_GAME = ["steam.exe", "steamwebhelper.exe", "steamservice.exe",
+                  "steamerrorreporter.exe", "steamuserstatisticssync.exe"]
+STEAM_HOST_NAMES = ["steam.exe"]
 
 # Browser processes to block (kids not allowed to open any browser)
 BROWSER_PROCESSES = [
@@ -982,7 +1014,7 @@ def add_bonus_time(seconds: int = BONUS_STEP_SEC):
         try:
             kind = "Weekend" if is_weekend() else "Weekday"
             show_warning_async(
-                "AlbionLimiter - Bonus Added!",
+                "PlayLimit - Bonus Added!",
                 f"+15 minutes added for today!\n\n"
                 f"Base limit ({kind}): {base//60} min\n"
                 f"Bonus today: +{new_bonus//60} min\n"
@@ -1085,7 +1117,7 @@ def console_thread():
     # Header is logged, not printed to console
     try:
         log("=" * 60)
-        log(f" {APP_NAME} v{__version__} - Albion Online Time Limiter (GUI app)")
+        log(f" {APP_NAME} v{__version__} - Game Time Limiter (GUI app, all games share one budget)")
         log("=" * 60)
         log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
         log(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
@@ -1112,19 +1144,23 @@ def console_thread():
                 bonus = int(s.get("bonus_seconds", 0))
                 remaining = max(0, limit - used)
                 warned = s.get("warned", False)
-            running = is_albion_running()
+            try:
+                games_now = get_running_games()
+            except Exception:
+                games_now = []
+            running = len(games_now) > 0
             ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             day_type = "Weekend" if is_weekend(today) else "Weekday"
             base = get_daily_limit_sec(today)
             # Build status line
-            status = "RUNNING" if running else "not running"
+            gstatus = ("RUNNING: " + ", ".join(games_now[:3])) if running else "not running"
             # Color not needed, plain text
             if is_disabled():
-                line = f"[{ts}] *** DISABLED *** | PlayLimit is OFF | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} | Browser block OFF | Press reboot or delete {DISABLE_FLAG_FILE} to re-enable"
+                line = f"[{ts}] *** DISABLED *** | PlayLimit is OFF | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Games {gstatus} | Browser block OFF | Press reboot or delete {DISABLE_FLAG_FILE} to re-enable"
             elif is_browser_block_exempt():
-                line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''} | Browser OFF (exempt)"
+                line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Games {gstatus} {'(WARNED)' if warned else ''} | Browser OFF (exempt)"
             else:
-                line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Albion {status} {'(WARNED)' if warned else ''} | Browser BLOCKED"
+                line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Games {gstatus} {'(WARNED)' if warned else ''} | Browser BLOCKED"
             try:
                 print(line)
                 sys.stdout.flush()
@@ -1233,7 +1269,7 @@ def show_time_window():
             try:
                 if is_disabled():
                     time_label.config(text="DISABLED", fg="#ff5555")
-                    detail_label.config(text="PlayLimit is OFF\nBrowsers and Albion allowed")
+                    detail_label.config(text="PlayLimit is OFF\nBrowsers and games allowed")
                     progress.coords(bar, 0, 0, 0, 14)
                     progress.itemconfig(bar, fill="#ff5555")
                 elif is_browser_block_exempt():
@@ -1407,37 +1443,104 @@ def show_warning_async(title, text, style=0x30):
     """No popups allowed - log only (previously spawned MessageBox subprocess)."""
     log(f"UI message suppressed [{title}]: {text[:200]}")
 
-def is_albion_running() -> bool:
-    names_lower = [n.lower() for n in TARGET_PROCESSES]
+GAME_PROCESSES_SET = set(n.lower() for n in GAME_PROCESSES)
+JAVA_MINECRAFT_SET = set(n.lower() for n in JAVA_MINECRAFT_NAMES)
+STEAM_NON_GAME_SET = set(n.lower() for n in STEAM_NON_GAME)
+STEAM_HOST_SET = set(n.lower() for n in STEAM_HOST_NAMES)
+
+def _is_game_process(name: str, cmdline, ancestor_names) -> bool:
+    """Pure matcher (unit-testable): is this process gameplay burning the shared budget?"""
+    n = (name or "").lower()
+    if not n:
+        return False
+    if n in GAME_PROCESSES_SET:
+        return True
+    # catch-all for Albion variants (e.g. future launcher names)
+    if "albion" in n and n.endswith(".exe"):
+        return True
+    # Java hosts only count when they are actually Minecraft (never random java apps)
+    if n in JAVA_MINECRAFT_SET:
+        try:
+            cmd = " ".join(cmdline or []).lower()
+        except Exception:
+            cmd = ""
+        if "minecraft" in cmd or "mojang" in cmd:
+            return True
+        try:
+            for a in (ancestor_names or []):
+                if "minecraft" in (a or "").lower():
+                    return True
+        except Exception:
+            pass
+        return False
+    # Steam store/chat/service helpers must never count as playtime
+    if n in STEAM_NON_GAME_SET:
+        return False
+    # Any other game launched through Steam counts (covers every Steam game)
+    try:
+        for a in (ancestor_names or []):
+            if (a or "").lower() in STEAM_HOST_SET:
+                return True
+    except Exception:
+        pass
+    return False
+
+def _ancestor_names(proc, max_depth=6):
+    """Names of parent processes up the tree (for Steam-launch detection)."""
+    names = []
+    try:
+        p = proc
+        for _ in range(max_depth):
+            p = p.parent()
+            if p is None:
+                break
+            try:
+                names.append((p.info.get('name') or "") if hasattr(p, 'info') else (p.name() or ""))
+            except Exception:
+                try:
+                    names.append(p.name() or "")
+                except Exception:
+                    break
+    except Exception:
+        pass
+    return names
+
+def get_running_games():
+    """Sorted display names of currently running games (shared 1-hour budget)."""
+    found = {}
     if HAS_PSUTIL:
         try:
-            for p in psutil.process_iter(['name']):
+            for p in psutil.process_iter(['name', 'pid', 'cmdline']):
                 try:
-                    n = (p.info.get('name') or "").lower()
-                    if n in names_lower:
-                        return True
-                    # also partial match: albion
-                    if "albion" in n:
-                        return True
+                    info = p.info or {}
+                    name = info.get('name') or ""
+                    if _is_game_process(name, info.get('cmdline'), _ancestor_names(p)):
+                        found[p.pid] = name
                 except Exception:
                     continue
-            return False
+            return sorted(found.values(), key=str.lower)
         except Exception as e:
             log(f"psutil error: {e}")
 
-    # Fallback: tasklist CSV
+    # Fallback: tasklist CSV substring match on known names (no ancestry info)
     try:
         out = subprocess.check_output('tasklist /FO CSV /NH', shell=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         low = out.lower()
-        for n in names_lower:
-            if n.lower() in low:
-                return True
+        for n in GAME_PROCESSES_SET:
+            if n in low:
+                found[n] = n
         if "albion" in low:
-            # double check to avoid false positives but log it
-            return True
-        return False
+            found["albion"] = "albion"
+        return sorted(found.values(), key=str.lower)
     except Exception as e:
         log(f"tasklist check failed: {e}")
+        return []
+
+def is_albion_running() -> bool:
+    """Backwards-compat alias: True when ANY watched game is running (shared budget)."""
+    try:
+        return len(get_running_games()) > 0
+    except Exception:
         return False
 
 def is_browser_running() -> bool:
@@ -1518,25 +1621,25 @@ def kill_browsers():
             log(f"browser taskkill failed: {e}")
             return False
 
-def kill_albion():
-    """Try graceful close via WM_CLOSE, then terminate."""
+def kill_games():
+    """Terminate all currently running watched games (shared budget enforcement)."""
     if is_disabled():
         return False
     killed = False
-    names_lower = [n.lower() for n in TARGET_PROCESSES]
-
     if HAS_PSUTIL:
         targets = []
-        for p in psutil.process_iter(['name', 'pid']):
-            try:
-                n = (p.info.get('name') or "").lower()
-                if n in names_lower or "albion" in n:
-                    targets.append(p)
-            except Exception:
-                continue
+        try:
+            for p in psutil.process_iter(['name', 'pid', 'cmdline']):
+                try:
+                    info = p.info or {}
+                    if _is_game_process(info.get('name') or "", info.get('cmdline'), _ancestor_names(p)):
+                        targets.append(p)
+                except Exception:
+                    continue
+        except Exception as e:
+            log(f"kill scan error: {e}")
         for p in targets:
             try:
-                # Try to close window gracefully first: send WM_CLOSE to main window? psutil can't, so terminate
                 # Attempt terminate (graceful)
                 p.terminate()
                 killed = True
@@ -1554,18 +1657,22 @@ def kill_albion():
                 killed = True
         return killed
     else:
-        # Fallback: taskkill
+        # Fallback: taskkill known names
         try:
             # /T kills child processes too
-            for name in TARGET_PROCESSES:
+            for name in GAME_PROCESSES:
                 subprocess.run(f'taskkill /F /IM "{name}" /T', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            # generic albion kill via wmic if any remaining
+            # generic albion kill for any remaining variant
             subprocess.run('taskkill /F /FI "IMAGENAME eq Albion*" /T', shell=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             log("taskkill executed")
             return True
         except Exception as e:
             log(f"taskkill failed: {e}")
             return False
+
+def kill_albion():
+    """Backwards-compat alias for kill_games()."""
+    return kill_games()
 
 def format_minutes(sec: int) -> str:
     m = sec // 60
@@ -1607,7 +1714,7 @@ def main_loop():
     if is_disabled():
         log("STATUS: DISABLED - all limits and browser block are OFF")
     elif is_browser_block_exempt():
-        log(f"STATUS: ACTIVE - Browser block OFF on this PC (exempt) | Albion limit ON")
+        log(f"STATUS: ACTIVE - Browser block OFF on this PC (exempt) | Game limit ON")
     else:
         log(f"STATUS: ACTIVE - Browser block ON ({', '.join(BROWSER_PROCESSES)})")
     log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Alt+T, Disable: Ctrl+Shift+D")
@@ -1714,12 +1821,16 @@ def main_loop():
             except Exception as e:
                 log(f"Browser check error: {e}")
 
-            running = is_albion_running()
+            try:
+                games_running = get_running_games()
+            except Exception:
+                games_running = []
+            running = len(games_running) > 0
             # Edge-triggered transition log (full picture without spam)
             try:
                 prev = state.get("last_seen_running", False)
                 if running and not prev:
-                    log(f"GAME START detected - counting time (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
+                    log(f"GAME START detected ({', '.join(games_running[:3])}) - counting shared time (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
                 elif prev and not running:
                     log(f"GAME STOP detected - timer paused (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
                 if prev != running:
@@ -1736,7 +1847,7 @@ def main_loop():
                 if over_limit:
                     with _state_lock:
                         used = state["used_seconds"]
-                    log(f"LIMIT REACHED ({format_minutes(used)}/{format_minutes(limit)}). Blocking Albion Online.")
+                    log(f"LIMIT REACHED ({format_minutes(used)}/{format_minutes(limit)}). Blocking games ({', '.join(games_running[:3])}).")
                     kill_albion()
                     # Show block message only once per detection burst (avoid spam every 5 sec)
                     with _state_lock:
@@ -1748,8 +1859,8 @@ def main_loop():
                             need_popup = False
                     if need_popup:
                         show_warning_async(
-                            "Albion Online - Time's up!",
-                            f"Daily limit reached ({limit//60} minutes).\n\n"
+                            "PlayLimit - Time's up!",
+                            f"Daily game time reached ({limit//60} minutes shared across all games).\n\n"
                             f"You've played {format_minutes(used)} today.\n"
                             f"Come back tomorrow!\n\n"
                             f"({today.isoformat()} - {'Weekend' if is_weekend(today) else 'Weekday'} limit: {limit//60} min)",
@@ -1778,18 +1889,18 @@ def main_loop():
                             save_state(state)
                         log(f"WARNING: 5 minutes remaining! ({format_minutes(remaining)} left)")
                         show_warning_async(
-                            "Albion Online - 5 Minutes Left!",
-                            f"Only 5 minutes remaining today!\n\n"
+                            "PlayLimit - 5 Minutes Left!",
+                            f"Only 5 minutes of game time remaining today!\n\n"
                             f"Used: {format_minutes(used)} / {format_minutes(limit)}\n"
                             f"Remaining: {format_minutes(remaining)}\n\n"
-                            f"Game will close automatically when time is up.\n"
+                            f"Games will close automatically when time is up.\n"
                             f"Please finish up and save!",
                             style=0x30  # MB_ICONWARNING
                         )
 
                     # If we just hit the limit during this tick, close now (no popup - window shows countdown)
                     if used >= limit:
-                        log(f"Time up! Closing Albion Online (used {format_minutes(used)})")
+                        log(f"Time up! Closing games (used {format_minutes(used)})")
                         kill_albion()
                         with _state_lock:
                             state["blocked_notified"] = True
