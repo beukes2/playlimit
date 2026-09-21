@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.3"
+__version__ = "1.6.4"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -880,6 +880,40 @@ def self_update(show_ui=False):
         import traceback
         log(traceback.format_exc())
 
+_update_status = {"text": ""}
+
+def force_update_check():
+    """Worker for the small Update button: check GitHub NOW, hop if verified-newer.
+
+    Today's used time is flushed to disk before hopping and again on loop exit,
+    so the restart never loses a second. In-window status text only, no popups.
+    """
+    try:
+        _update_status["text"] = "checking for update..."
+        log("Update button: manual check started")
+        try:
+            with _state_lock:
+                save_state(load_state())
+        except Exception:
+            pass
+        sv = _check_and_stage_update()
+        if sv:
+            _update_status["text"] = f"updating to v{sv}, restarting..."
+            try:
+                with _state_lock:
+                    save_state(load_state())
+            except Exception:
+                pass
+            _do_update_hop(sv)
+            return
+        _update_status["text"] = f"already latest (v{__version__})"
+        log("Update button: already latest, staying")
+    except SystemExit:
+        raise
+    except Exception as e:
+        _update_status["text"] = "update check failed"
+        log(f"Update button error: {e}")
+
 # ---------- GITHUB LOG SHIPPING ----------
 # Every running copy periodically uploads its log so the parent PC can read all
 # machines' logs from one place: https://github.com/beukes2/playlimit-logs/tree/master/logs
@@ -1224,7 +1258,7 @@ def show_time_window():
         # Keep reference
         globals()['_time_window'] = root
         root.title(f"{APP_NAME} v{__version__} - Time Left")
-        root.geometry("360x240")
+        root.geometry("360x265")
         root.resizable(False, False)
         try:
             root.attributes('-topmost', True)
@@ -1263,7 +1297,24 @@ def show_time_window():
         bar = progress.create_rectangle(0, 0, 0, 14, fill="#00ff88", outline="")
 
         btn_frame = tk.Frame(root, bg="#1e1e2e")
-        btn_frame.pack(pady=6)
+        btn_frame.pack(pady=2)
+
+        # Small update button + status line (in-window only, never a popup).
+        # Safe for kids to click: it only switches to a verified-newer version;
+        # today's used time is flushed to disk first and survives the restart.
+        update_status_label = tk.Label(root, text="", font=("Segoe UI", 8), bg="#1e1e2e", fg="#888888")
+        update_status_label.pack()
+
+        def on_update_btn():
+            try:
+                update_status_label.config(text="checking for update...")
+            except Exception:
+                pass
+            threading.Thread(target=force_update_check, daemon=True).start()
+
+        tk.Button(btn_frame, text="Update", command=on_update_btn,
+                  font=("Segoe UI", 8), bg="#2d2d44", fg="#bbbbbb",
+                  relief="flat", padx=8, pady=1).pack()
 
         def refresh():
             try:
@@ -1304,6 +1355,10 @@ def show_time_window():
                     w = int(320 * min(pct, 1.0))
                     progress.coords(bar, 0, 0, w, 14)
                     progress.itemconfig(bar, fill="#ff5555" if remaining <= 300 else "#00ff88")
+                try:
+                    update_status_label.config(text=_update_status.get("text", ""))
+                except Exception:
+                    pass
                 # schedule next
                 if root.winfo_exists():
                     root.after(1000, refresh)
@@ -1367,7 +1422,7 @@ def show_time_window():
             root.update_idletasks()
             x = (root.winfo_screenwidth() // 2) - (360 // 2)
             y = (root.winfo_screenheight() // 2) - (220 // 2)
-            root.geometry(f"360x240+{x}+{y}")
+            root.geometry(f"360x265+{x}+{y}")
         except Exception:
             pass
         try:
@@ -2018,6 +2073,15 @@ def main_loop():
             import traceback
             log(traceback.format_exc())
             time.sleep(POLL_INTERVAL_SEC)
+
+    # Final flush: whatever path exits the loop (hotkey close, update hop,
+    # disable), today's used time is already on disk - the restart loses nothing.
+    try:
+        with _state_lock:
+            save_state(state)
+        log(f"Shutdown: flushed today's time ({format_minutes(state.get('used_seconds', 0))} used)")
+    except Exception as e:
+        log(f"Shutdown flush skipped: {e}")
 
 if __name__ == "__main__":
     # Desktop icon (--show-time) just starts the normal visible app. Window visible = running.
