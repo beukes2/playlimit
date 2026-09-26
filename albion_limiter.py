@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.4"
+__version__ = "1.6.5"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -269,6 +269,8 @@ def get_effective_limit_sec(d: datetime.date = None, state: dict = None) -> int:
 
 _state_lock = threading.Lock()
 
+SESSION_KEEP = 30  # session history rows kept in state.json
+
 def load_state() -> dict:
     default = {
         "date": datetime.date.today().isoformat(),
@@ -276,7 +278,8 @@ def load_state() -> dict:
         "warned": False,
         "last_seen_running": False,
         "bonus_seconds": 0,
-        "blocked_notified": False
+        "blocked_notified": False,
+        "sessions": []
     }
     if not STATE_FILE.exists():
         return default
@@ -1258,7 +1261,7 @@ def show_time_window():
         # Keep reference
         globals()['_time_window'] = root
         root.title(f"{APP_NAME} v{__version__} - Time Left")
-        root.geometry("360x265")
+        root.geometry("360x430")
         root.resizable(False, False)
         try:
             root.attributes('-topmost', True)
@@ -1316,6 +1319,46 @@ def show_time_window():
                   font=("Segoe UI", 8), bg="#2d2d44", fg="#bbbbbb",
                   relief="flat", padx=8, pady=1).pack()
 
+        # Session history grid (newest top, live session ticks from available data).
+        # Read-only labels, updated in place every refresh - safe for kids.
+        grid_frame = tk.Frame(root, bg="#1e1e2e")
+        grid_frame.pack(pady=(4, 2))
+        GRID_ROWS = 6
+        grid_cells = []
+        for col, txt in enumerate(("Game", "Start", "End", "Time")):
+            tk.Label(grid_frame, text=txt, font=("Segoe UI", 8, "bold"),
+                     bg="#1e1e2e", fg="#888888", width=(12 if col == 0 else 7),
+                     anchor="w" if col == 0 else "center").grid(row=0, column=col, padx=2)
+        for _ in range(GRID_ROWS):
+            row_cells = []
+            for col in range(4):
+                lbl = tk.Label(grid_frame, text="", font=("Segoe UI", 8),
+                               bg="#1e1e2e", fg="#cccccc", width=(12 if col == 0 else 7),
+                               anchor="w" if col == 0 else "center")
+                lbl.grid(row=len(grid_cells) + 1, column=col, padx=2)
+                row_cells.append(lbl)
+            grid_cells.append(row_cells)
+
+        def refresh_grid():
+            try:
+                with _state_lock:
+                    rows = session_rows(load_state())
+            except Exception:
+                rows = []
+            for i, cells in enumerate(grid_cells):
+                if i < len(rows):
+                    game, start, end, dur, live = rows[i]
+                    fg = "#00ff88" if live else "#cccccc"
+                    vals = (game, start, end, dur)
+                else:
+                    vals = ("", "", "", "")
+                    fg = "#cccccc"
+                for lbl, v in zip(cells, vals):
+                    try:
+                        lbl.config(text=v, fg=fg)
+                    except Exception:
+                        pass
+
         def refresh():
             try:
                 if is_disabled():
@@ -1357,6 +1400,10 @@ def show_time_window():
                     progress.itemconfig(bar, fill="#ff5555" if remaining <= 300 else "#00ff88")
                 try:
                     update_status_label.config(text=_update_status.get("text", ""))
+                except Exception:
+                    pass
+                try:
+                    refresh_grid()
                 except Exception:
                     pass
                 # schedule next
@@ -1422,7 +1469,7 @@ def show_time_window():
             root.update_idletasks()
             x = (root.winfo_screenwidth() // 2) - (360 // 2)
             y = (root.winfo_screenheight() // 2) - (220 // 2)
-            root.geometry(f"360x265+{x}+{y}")
+            root.geometry(f"360x430+{x}+{y}")
         except Exception:
             pass
         try:
@@ -1825,6 +1872,103 @@ def format_minutes(sec: int) -> str:
         return f"{m} min"
     return f"{m} min {s} sec"
 
+def _fmt_dur(total_sec: int) -> str:
+    """Compact duration for the session grid (e.g. 45s, 12m, 1h 05m)."""
+    try:
+        total_sec = max(0, int(total_sec))
+    except Exception:
+        return "?"
+    if total_sec < 60:
+        return f"{total_sec}s"
+    m = total_sec // 60
+    if m < 60:
+        return f"{m}m"
+    return f"{m // 60}h {m % 60:02d}m"
+
+def _now_hhmm(now=None) -> str:
+    return (now or datetime.datetime.now()).strftime("%H:%M")
+
+def _hhmm_to_min(s) -> int | None:
+    try:
+        h, m = str(s).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return None
+
+def _display_game(name: str) -> str:
+    """Short display name for the grid (drops .exe, caps at 18 chars)."""
+    try:
+        n = str(name or "?")
+        if n.lower().endswith(".exe"):
+            n = n[:-4]
+        return n if len(n) <= 18 else n[:17] + "…"
+    except Exception:
+        return "?"
+
+def record_game_presence(games_now):
+    """Sync open sessions with currently running games. Returns the saved state.
+
+    - Game appears -> append {game, start: HH:MM, end: None}
+    - Game gone -> stamp end: HH:MM on its open session
+    - Keeps the last SESSION_KEEP rows. Callers adopt the returned state.
+    """
+    with _state_lock:
+        state = load_state()
+        sessions = state.get("sessions", []) or []
+        open_now = {s.get("game") for s in sessions if not s.get("end")}
+        current = set(games_now or [])
+        now_s = _now_hhmm()
+        changed = False
+        for s in sessions:
+            if not s.get("end") and s.get("game") not in current:
+                s["end"] = now_s
+                changed = True
+                log(f"GAME STOP {s.get('game')} at {now_s}")
+        for g in sorted(current):
+            if g not in open_now:
+                sessions.append({"game": g, "start": now_s, "end": None})
+                changed = True
+                log(f"GAME START {g} at {now_s}")
+        if len(sessions) > SESSION_KEEP:
+            sessions = sessions[-SESSION_KEEP:]
+            changed = True
+        state["sessions"] = sessions
+        state["last_seen_running"] = len(current) > 0
+        if changed:
+            save_state(state)
+        return state
+
+def session_rows(state, now=None):
+    """Grid rows newest-first: (game, start, end_display, duration, is_live).
+    Live sessions show end '…' and a ticking duration from available data."""
+    now = now or datetime.datetime.now()
+    rows = []
+    for s in (state.get("sessions", []) or []):
+        try:
+            game = _display_game(s.get("game"))
+            start = s.get("start") or "--:--"
+            end = s.get("end")
+            sm = _hhmm_to_min(start)
+            if end:
+                em = _hhmm_to_min(end)
+                if sm is not None and em is not None and em >= sm:
+                    dur = _fmt_dur((em - sm) * 60)
+                else:
+                    dur = "?"
+                rows.append((game, start, end, dur, False, start))
+            else:
+                if sm is None:
+                    dur = "?"
+                else:
+                    anchor = now.replace(hour=sm // 60, minute=sm % 60, second=0, microsecond=0)
+                    dur = _fmt_dur((now - anchor).total_seconds())
+                rows.append((game, start, "…", dur, True, start))
+        except Exception:
+            continue
+    live = sorted([r for r in rows if r[4]], key=lambda r: r[5], reverse=True)
+    done = sorted([r for r in rows if not r[4]], key=lambda r: r[5], reverse=True)
+    return [(g, s, e, d, lv) for (g, s, e, d, lv, _) in live + done]
+
 def main_loop():
     # No persistent disabled flag - always start enabled, clean any stale flag left from older versions
     global APP_DISABLED
@@ -1970,20 +2114,19 @@ def main_loop():
                 games_running = get_running_games()
             except Exception:
                 games_running = []
-            running = len(games_running) > 0
-            # Edge-triggered transition log (full picture without spam)
+            # Record session history (start/end/duration per game, persisted).
+            # File is saved every tick while running, so adopting the returned
+            # state never loses in-memory used_seconds.
             try:
                 prev = state.get("last_seen_running", False)
-                if running and not prev:
+                state = record_game_presence(games_running)
+                if games_running and not prev:
                     log(f"GAME START detected ({', '.join(games_running[:3])}) - counting shared time (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
-                elif prev and not running:
+                elif prev and not games_running:
                     log(f"GAME STOP detected - timer paused (used {format_minutes(state['used_seconds'])}/{format_minutes(limit)})")
-                if prev != running:
-                    with _state_lock:
-                        state["last_seen_running"] = running
-                        save_state(state)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"session record error: {e}")
+            running = len(games_running) > 0
 
             if running:
                 # If already over limit -> block immediately
