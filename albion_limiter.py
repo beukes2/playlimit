@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.6"
+__version__ = "1.6.7"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -71,6 +71,12 @@ JAVA_MINECRAFT_NAMES = ["javaw.exe", "java.exe", "javawm.exe"]
 STEAM_NON_GAME = ["steam.exe", "steamwebhelper.exe", "steamservice.exe",
                   "steamerrorreporter.exe", "steamuserstatisticssync.exe"]
 STEAM_HOST_NAMES = ["steam.exe"]
+# Helper processes that are never the game itself, even when Steam launched them
+# (e.g. QtWebEngineProcess the Steam client spawns transiently for store pages -
+# counting those would burn the budget while nobody is playing)
+STEAM_ANCESTRY_EXCLUDE = ["qtwebengineprocess.exe", "crashhandler.exe",
+                          "crashpad_handler.exe", "crashreporter.exe",
+                          "unitycrashhandler64.exe", "unitycrashhandler.exe"]
 
 # Browser processes to block (kids not allowed to open any browser)
 BROWSER_PROCESSES = [
@@ -1559,6 +1565,7 @@ GAME_PROCESSES_SET = set(n.lower() for n in GAME_PROCESSES)
 JAVA_MINECRAFT_SET = set(n.lower() for n in JAVA_MINECRAFT_NAMES)
 STEAM_NON_GAME_SET = set(n.lower() for n in STEAM_NON_GAME)
 STEAM_HOST_SET = set(n.lower() for n in STEAM_HOST_NAMES)
+STEAM_ANCESTRY_EXCLUDE_SET = set(n.lower() for n in STEAM_ANCESTRY_EXCLUDE)
 
 def _is_game_process(name: str, cmdline, ancestor_names) -> bool:
     """Pure matcher (unit-testable): is this process gameplay burning the shared budget?"""
@@ -1587,6 +1594,9 @@ def _is_game_process(name: str, cmdline, ancestor_names) -> bool:
         return False
     # Steam store/chat/service helpers must never count as playtime
     if n in STEAM_NON_GAME_SET:
+        return False
+    # Renderer/crash helpers are never the game itself, even under Steam
+    if n in STEAM_ANCESTRY_EXCLUDE_SET:
         return False
     # Any other game launched through Steam counts (covers every Steam game)
     try:
