@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.5"
+__version__ = "1.6.6"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -29,6 +29,7 @@ WEEKDAY_LIMIT_SEC = 60 * 60          # Mon-Thu default (shared budget)
 WEEKEND_LIMIT_SEC = 120 * 60         # Fri-Sun default (shared budget)
 WARNING_BEFORE_SEC = 5 * 60          # 5 minute warning
 POLL_INTERVAL_SEC = 5                # check every 5 seconds
+TICK_CREDIT_CAP_SEC = 60             # max real seconds credited per tick (sleep/hibernate gaps)
 GRACEFUL_CLOSE_TIMEOUT = 15          # seconds to wait after WM_CLOSE before kill
 BONUS_STEP_SEC = 15 * 60             # added per Ctrl+Alt+T press
 
@@ -279,6 +280,7 @@ def load_state() -> dict:
         "last_seen_running": False,
         "bonus_seconds": 0,
         "blocked_notified": False,
+        "disabled_date": None,
         "sessions": []
     }
     if not STATE_FILE.exists():
@@ -1066,7 +1068,8 @@ def add_bonus_time(seconds: int = BONUS_STEP_SEC):
         return state
 
 def hotkey_listener_thread():
-    """Global hotkeys: Ctrl+Alt+T -> +15 min, Ctrl+Shift+D -> disable, Ctrl+Alt+D -> close app."""
+    """Global hotkeys: Ctrl+Alt+T -> +15 min, Ctrl+Shift+D -> disable+exit, Ctrl+Alt+D -> disable for today."""
+    global APP_DISABLED
     try:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
@@ -1100,7 +1103,7 @@ def hotkey_listener_thread():
     if not ok3:
         log(f"Hotkey: RegisterHotKey Ctrl+Alt+D failed, error {kernel32.GetLastError()}")
     else:
-        log("Hotkey registered: Ctrl+Alt+D = CLOSE PlayLimit")
+        log("Hotkey registered: Ctrl+Alt+D = disable for today (auto re-enables tomorrow)")
 
     if not ok1 and not ok2 and not ok3:
         return
@@ -1134,9 +1137,15 @@ def hotkey_listener_thread():
                     except Exception as e:
                         log(f"Disable hotkey error: {e}")
                 elif msg.wParam == HOTKEY_ID_CLOSE:
-                    log("Hotkey pressed: Ctrl+Alt+D - CLOSING PlayLimit (no popup, full exit)")
-                    request_shutdown("closed via Ctrl+Alt+D")
-                    # No os._exit (see disable_app): loops observe _shutdown and unwind cleanly.
+                    log("Hotkey pressed: Ctrl+Alt+D - disabling for today (auto re-enables tomorrow, app keeps running)")
+                    try:
+                        with _state_lock:
+                            st = load_state()
+                            st["disabled_date"] = datetime.date.today().isoformat()
+                            save_state(st)
+                        APP_DISABLED = True
+                    except Exception as e:
+                        log(f"Disable-for-today error: {e}")
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
@@ -1159,7 +1168,7 @@ def console_thread():
         log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
         log(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
         log(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
-        log(f" Hotkey: Ctrl+Alt+D = CLOSE PlayLimit (exit app)")
+        log(f" Hotkey: Ctrl+Alt+D = disable for today (auto re-enables tomorrow)")
         if is_browser_block_exempt():
             log(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
         else:
@@ -1422,14 +1431,15 @@ def show_time_window():
 
         # Kids must NOT be able to close the app via X, taskbar Close or Alt+F4.
         # Those all arrive as WM_CLOSE -> ignored here (logged only).
-        # Parent closes via Ctrl+Alt+D hotkey or Task Manager as Admin (TerminateProcess
+        # Parent exits via Ctrl+Shift+D hotkey or Task Manager as Admin (TerminateProcess
         # cannot be blocked); both do a full shutdown so no traces are left behind.
+        # Ctrl+Alt+D only disables enforcement for today (app keeps running).
         # Register this root so request_shutdown() can destroy it from hotkeys.
         global _tk_root
         _tk_root = root
 
         def on_close(*args):
-            log("Close attempt blocked (X/taskbar/Alt+F4) - kids cannot close; parent: Ctrl+Alt+D or Task Manager as Admin")
+            log("Close attempt blocked (X/taskbar/Alt+F4) - kids cannot close; parent: Ctrl+Shift+D or Task Manager as Admin")
 
         try:
             root.protocol("WM_DELETE_WINDOW", on_close)
@@ -1513,7 +1523,7 @@ def tray_thread():
             threading.Thread(target=do_show, daemon=True).start()
 
         # NOTE: no Exit/Disable menu items on purpose - kids would click them.
-        # Parent closes via Ctrl+Alt+D hotkey or Task Manager as Admin.
+        # Parent exits via Ctrl+Shift+D hotkey or Task Manager as Admin.
         menu = pystray.Menu(
             item('Show Time Left', on_show, default=True)
         )
@@ -1865,9 +1875,10 @@ def kill_albion():
     """Backwards-compat alias for kill_games()."""
     return kill_games()
 
-def format_minutes(sec: int) -> str:
-    m = sec // 60
-    s = sec % 60
+def format_minutes(sec) -> str:
+    total = int(sec)  # used_seconds is a float (wall-clock credits)
+    m = total // 60
+    s = total % 60
     if s == 0:
         return f"{m} min"
     return f"{m} min {s} sec"
@@ -2068,10 +2079,24 @@ def main_loop():
     with _state_lock:
         state = load_state()
         save_state(state)
+        APP_DISABLED = (state.get("disabled_date") == datetime.date.today().isoformat())
+        if APP_DISABLED:
+            log("Startup: disabled for today (Ctrl+Alt+D) - will auto re-enable tomorrow")
 
+    last_tick = time.monotonic()
+    last_log_minute = -1
     while not _shutdown.is_set():
         try:
             tick_start = time.time()
+            # Real elapsed time since last tick (monotonic: immune to clock changes).
+            # A slow tick must still credit full real seconds, so the countdown
+            # can never run longer than the allowed playtime.
+            now_mono = time.monotonic()
+            elapsed = now_mono - last_tick
+            last_tick = now_mono
+            if elapsed < 0:
+                elapsed = 0
+            credit = min(elapsed, TICK_CREDIT_CAP_SEC)
             today = datetime.date.today()
             # Use effective limit (base + bonus) - must read state under lock to be consistent
             with _state_lock:
@@ -2079,16 +2104,21 @@ def main_loop():
                 fresh = load_state()
                 if fresh["date"] != state["date"]:
                     state = fresh
-                    log(f"New day {fresh['date']}, new effective limit {get_effective_limit_sec(today, state)//60} min")
+                    APP_DISABLED = False
+                    log(f"New day {fresh['date']}: counter reset, PlayLimit re-enabled, new effective limit {get_effective_limit_sec(today, state)//60} min")
                 else:
-                    # Sync bonus/warned/blocked changes from hotkey (file was updated outside main loop)
+                    # Sync bonus/warned/blocked/disabled changes from hotkey (file was updated outside main loop)
                     # and keep used_seconds from memory (most up-to-date)
                     if fresh.get("bonus_seconds", 0) != state.get("bonus_seconds", 0) or \
                        fresh.get("warned", False) != state.get("warned", False) or \
-                       fresh.get("blocked_notified", False) != state.get("blocked_notified", False):
+                       fresh.get("blocked_notified", False) != state.get("blocked_notified", False) or \
+                       fresh.get("disabled_date") != state.get("disabled_date"):
                         state["bonus_seconds"] = fresh.get("bonus_seconds", 0)
                         state["warned"] = fresh.get("warned", False)
                         state["blocked_notified"] = fresh.get("blocked_notified", False)
+                        state["disabled_date"] = fresh.get("disabled_date")
+                    # Disabled flag follows the file: set for today, auto-cleared on date change
+                    APP_DISABLED = (state.get("disabled_date") == today.isoformat())
 
                 limit = get_effective_limit_sec(today, state)
             warning_at = limit - WARNING_BEFORE_SEC
@@ -2097,8 +2127,8 @@ def main_loop():
             if is_disabled():
                 # Still sleep and continue; console will show DISABLED
                 if int(time.time()) % 60 == 0:
-                    log("PlayLimit DISABLED - skipping all checks (browsers/Alibion allowed)")
-                time.sleep(POLL_INTERVAL_SEC)
+                    log("PlayLimit DISABLED for today - skipping all checks (auto re-enables tomorrow)")
+                _shutdown.wait(POLL_INTERVAL_SEC)
                 continue
 
             # Browser block: close any browser immediately (always, when not disabled)
@@ -2155,9 +2185,11 @@ def main_loop():
                             style=0x10  # MB_ICONERROR
                         )
                 else:
-                    # Count this interval
+                    # Credit ACTUAL elapsed real seconds (not a fixed 5s): slow
+                    # machines take longer per tick, and the countdown must never
+                    # run longer than the allowed playtime in real time.
                     with _state_lock:
-                        state["used_seconds"] += POLL_INTERVAL_SEC
+                        state["used_seconds"] += credit
                         # Cap at limit
                         if state["used_seconds"] > limit:
                             state["used_seconds"] = limit
@@ -2167,7 +2199,8 @@ def main_loop():
 
                     remaining = limit - used
                     # Log every minute to avoid spam
-                    if used % 60 == 0:
+                    if int(used) // 60 != last_log_minute:
+                        last_log_minute = int(used) // 60
                         log(f"Playing... {format_minutes(used)}/{format_minutes(limit)} used, {format_minutes(remaining)} remaining")
 
                     # Warning check

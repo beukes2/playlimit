@@ -212,7 +212,7 @@ Write-Host "=== INSTALL COMPLETE ===" -ForegroundColor Cyan
 Write-Host "Limits: Mon-Thu 1 hour TOTAL gaming (all games combined), Fri-Sun 120 min" -ForegroundColor White
 Write-Host "Runs from: $LiveExe (self-updates from GitHub, no admin needed)" -ForegroundColor White
 Write-Host "Behavior: closes Albion + blocks reopen until midnight, browser block ON (chrome/edge/firefox/brave/opera)" -ForegroundColor White
-Write-Host "Hotkeys: Ctrl+Alt+T = +15 min today, Ctrl+Alt+D = close, Ctrl+Shift+D = disable + exit" -ForegroundColor White
+Write-Host "Hotkeys: Ctrl+Alt+T = +15 min today, Ctrl+Alt+D = disable for today (auto re-enable), Ctrl+Shift+D = disable + exit" -ForegroundColor White
 Write-Host "Window: shows time left (X/taskbar close blocked for kids; no popups of any kind)" -ForegroundColor White
 Write-Host ""
 Write-Host "Data file: $DataDir\state.json" -ForegroundColor Gray
