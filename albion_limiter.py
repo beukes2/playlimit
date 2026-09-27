@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.7"
+__version__ = "1.6.8"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -215,20 +215,24 @@ def is_disabled() -> bool:
     return APP_DISABLED
 
 def disable_app():
+    """Ctrl+Shift+D: disable for the rest of today and exit (auto re-enables tomorrow).
+
+    The scheduled task is deliberately NOT disabled: that would stop the app from
+    ever starting again to clear the flag at midnight. The task stays enabled so
+    the app comes back at next logon and re-enables itself on the new date.
+    """
     global APP_DISABLED
     APP_DISABLED = True
-    log("=== PlayLimit DISABLED by Ctrl+Shift+D - shutting down fully (no traces) ===")
-    # No popup, no flag file. Disable scheduled task so it does not restart hidden,
-    # then exit the whole process so Task Manager shows nothing.
+    log("=== PlayLimit DISABLED for today by Ctrl+Shift+D - exiting (auto re-enables tomorrow) ===")
     try:
-        subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/DISABLE"], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-        log("Scheduled task AlbionLimiter disabled (disable hotkey)")
+        with _state_lock:
+            st = load_state()
+            st["disabled_date"] = datetime.date.today().isoformat()
+            save_state(st)
+        log("Saved disabled_date = today (clears automatically on the next day)")
     except Exception as e:
-        log(f"Disable task failed: {e}")
+        log(f"Could not save disabled_date: {e}")
     request_shutdown("disabled via Ctrl+Shift+D")
-    # No os._exit: hotkey loop below sees _shutdown and breaks, enforcement loop
-    # exits, Tk mainloop already destroyed -> clean interpreter teardown so the
-    # PyInstaller temp dir removes cleanly (no _MEI warning popup).
 
 def enable_app():
     global APP_DISABLED
@@ -603,6 +607,22 @@ def _task_target(task_name="AlbionLimiter"):
     except Exception:
         return None
 
+def _task_enabled(task_name="AlbionLimiter"):
+    """True if the task exists and is not disabled."""
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST"],
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        if r.returncode != 0:
+            return False
+        import re
+        m = re.search(r"Status:\s+(.+)", r.stdout)
+        if not m:
+            return True
+        return "disabled" not in m.group(1).strip().lower()
+    except Exception:
+        return False
+
 def _legacy_present():
     """Old installed copies the new exe must delete (needs admin for Program Files)."""
     try:
@@ -771,7 +791,25 @@ def do_install_steps():
     needs_legacy_fix = _legacy_present()
     if needs_legacy_fix:
         _install_log("legacy Program Files copy present - will delete")
-    if needs_task_fix or needs_legacy_fix:
+    # A disabled task means the app never starts again (e.g. left over from an
+    # older Ctrl+Shift+D). Self-heal it, which needs admin.
+    needs_task_enable = False
+    try:
+        if _task_exists() and not _task_enabled():
+            needs_task_enable = True
+            _install_log("scheduled task is DISABLED - will re-enable")
+    except Exception:
+        pass
+    if _is_admin() and needs_task_enable:
+        try:
+            r = subprocess.run(["schtasks", "/Change", "/TN", "AlbionLimiter", "/ENABLE"],
+                               capture_output=True, text=True, timeout=15,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            _install_log(f"task enable rc={r.returncode}")
+        except Exception as e:
+            _install_log(f"task enable failed: {e}")
+        needs_task_enable = not _task_enabled()
+    if needs_task_fix or needs_legacy_fix or needs_task_enable:
         if _is_admin():
             if needs_task_fix:
                 _create_task_ps()
@@ -1103,7 +1141,7 @@ def hotkey_listener_thread():
     if not ok2:
         log(f"Hotkey: RegisterHotKey Ctrl+Shift+D failed, error {kernel32.GetLastError()}")
     else:
-        log("Hotkey registered: Ctrl+Shift+D = DISABLE PlayLimit")
+        log("Hotkey registered: Ctrl+Shift+D = disable for today + exit (auto re-enables tomorrow)")
 
     ok3 = user32.RegisterHotKey(None, HOTKEY_ID_CLOSE, MOD_CONTROL | MOD_ALT, VK_D)
     if not ok3:
@@ -1137,7 +1175,7 @@ def hotkey_listener_thread():
                         import traceback
                         log(traceback.format_exc())
                 elif msg.wParam == HOTKEY_ID_DISABLE:
-                    log("Hotkey pressed: Ctrl+Shift+D - DISABLING")
+                    log("Hotkey pressed: Ctrl+Shift+D - disable for today + exit")
                     try:
                         disable_app()
                     except Exception as e:
@@ -1173,7 +1211,7 @@ def console_thread():
         log("=" * 60)
         log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
         log(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
-        log(f" Hotkey: Ctrl+Shift+D = DISABLE PlayLimit (allow browsers/game)")
+        log(f" Hotkey: Ctrl+Shift+D = disable for today + exit (auto re-enables tomorrow)")
         log(f" Hotkey: Ctrl+Alt+D = disable for today (auto re-enables tomorrow)")
         if is_browser_block_exempt():
             log(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
@@ -1763,7 +1801,7 @@ def kill_browsers():
                 killed = True
         if killed:
             try:
-                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nAsk a parent to press Ctrl+Shift+D to disable.", style=0x10)
+                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nask a parent to press Ctrl+Alt+D to disable.", style=0x10)
             except Exception:
                 pass
         return killed
