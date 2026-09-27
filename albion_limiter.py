@@ -19,7 +19,7 @@ import ctypes
 import threading
 from pathlib import Path
 
-__version__ = "1.6.8"
+__version__ = "1.6.9"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -634,6 +634,23 @@ def _legacy_present():
         pass
     return False
 
+def _task_has_repetition(task_name="AlbionLimiter"):
+    """True if the task repeats on a timer (the old 5-minute watchdog).
+
+    That watchdog relaunches the exe every 5 minutes; the new copy sees the
+    running instance and exits, but the PyInstaller splash flashes on screen
+    and steals focus. Such tasks must be recreated without the repeat trigger.
+    """
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/XML"],
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        if r.returncode != 0:
+            return False
+        return "<Repetition>" in r.stdout
+    except Exception:
+        return False
+
 def _elevation_due():
     """True at most once per day (separate marker file so state.json never clobbers it)."""
     try:
@@ -791,6 +808,16 @@ def do_install_steps():
     needs_legacy_fix = _legacy_present()
     if needs_legacy_fix:
         _install_log("legacy Program Files copy present - will delete")
+    # Old installs left a 5-minute repeating trigger: it relaunches the exe every
+    # 5 minutes, flashing the splash and stealing focus. Recreate the task without it.
+    needs_repeat_fix = False
+    try:
+        if _task_exists() and _task_has_repetition():
+            needs_repeat_fix = True
+            needs_task_fix = True
+            _install_log("scheduled task has a repeating trigger (5-min watchdog) - will recreate without it")
+    except Exception:
+        pass
     # A disabled task means the app never starts again (e.g. left over from an
     # older Ctrl+Shift+D). Self-heal it, which needs admin.
     needs_task_enable = False
