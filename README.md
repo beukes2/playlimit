@@ -3,7 +3,7 @@
 Limits Albion Online playtime for kids:
 - **Mon–Thu: 1 hour/day TOTAL across all games, Fri–Sun: 120 minutes/day**
 - Watched: Albion Online, Minecraft (Java + Bedrock + launcher), Roblox, Fortnite, Riot games, **any game launched through Steam** (detected via parent process) — Java only counts when it's actually Minecraft, Steam client/service/helpers never count
-- 5 minute warning popup before time runs out
+- 2 minute warning popup before time runs out
 - Automatically closes game when time is up
 - Blocks reopening until next day (midnight)
 - **Browser block: Chrome/Edge/Firefox/Brave/Opera etc. are auto-closed**
@@ -130,7 +130,7 @@ Config in `albion_limiter.py`:
 ```python
 WEEKDAY_LIMIT_SEC = 60 * 60   # Mon-Thu (shared budget, all games combined)
 WEEKEND_LIMIT_SEC = 120 * 60  # Fri-Sun (shared budget, Friday counts as weekend)
-WARNING_BEFORE_SEC = 5 * 60  # popup at 5 min left
+WARNING_BEFORE_SEC = 2 * 60  # popup at 2 min left
 BONUS_STEP_SEC = 15 * 60     # per Ctrl+Alt+T
 BROWSER_PROCESSES = ["chrome.exe","msedge.exe","firefox.exe","brave.exe",...]
 
@@ -187,7 +187,7 @@ No — close button is disabled, Ctrl+C/Close are ignored (`SetConsoleCtrlHandle
 Counter resets on next boot when date changes.
 
 **Warning not showing?**  
-Warning is a Windows MessageBox — if game is fullscreen it may be behind the game. Game will still close after 5 minutes.
+Warning is a Windows MessageBox - if game is fullscreen it may be behind the game. Game will still close after 2 minutes.
 
 ## Log & State
 

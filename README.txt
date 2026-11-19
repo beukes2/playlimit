@@ -3,7 +3,7 @@ ALBION ONLINE PARENTAL TIME LIMITER
 Limits Albion Online playtime for kids:
 - Weekdays (Mon-Fri): 50 minutes per day
 - Weekends (Sat-Sun): 2 hours per day
-- 5 minute warning popup before time runs out
+- 2 minute warning popup before time runs out
 - Automatically closes game when time is up
 - Blocks reopening until next day (midnight)
 
@@ -85,7 +85,7 @@ A: Counter resets on next boot when date changes.
 
 Q: Warning not showing?
 A: Warning is a Windows popup (MessageBox). If game is fullscreen, it may be behind game. 
-   The game will still close after 5 minutes.
+   The game will still close after 2 minutes.
 
 LOG & STATE
 -----------

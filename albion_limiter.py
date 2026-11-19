@@ -3,7 +3,7 @@
 PlayLimit - Parental Game Time Limiter (ALL games share one daily budget)
 - Mon-Thu: 60 minutes total gaming (Albion, Minecraft, Steam, ...)
 - Fri-Sun: 120 minutes total (Friday counts as weekend)
-- 5 minute warning, then closes games and blocks re-open until next day (midnight)
+- 2 minute warning popup before time runs out, then closes games and blocks re-open until next day (midnight)
 
 Runs silently in background. Install with install.ps1 (requires Admin).
 State stored in %ProgramData%\\AlbionLimiter\\state.json
@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.7.5"
+__version__ = "1.7.6"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -28,7 +28,7 @@ APP_NAME = "PlayLimit"
 # Mon-Thu: 1 hour total, Fri-Sun: 120 min total (Friday counts as weekend).
 WEEKDAY_LIMIT_SEC = 60 * 60          # Mon-Thu default (shared budget)
 WEEKEND_LIMIT_SEC = 120 * 60         # Fri-Sun default (shared budget)
-WARNING_BEFORE_SEC = 5 * 60          # 5 minute warning
+WARNING_BEFORE_SEC = 2 * 60          # 2 minute warning
 POLL_INTERVAL_SEC = 5                # check every 5 seconds
 TICK_CREDIT_CAP_SEC = 60             # max real seconds credited per tick (sleep/hibernate gaps)
 GRACEFUL_CLOSE_TIMEOUT = 15          # seconds to wait after WM_CLOSE before kill
@@ -2865,10 +2865,10 @@ def main_loop():
                         with _state_lock:
                             state["warned"] = True
                             save_state(state)
-                        log(f"WARNING: 5 minutes remaining! ({format_minutes(remaining)} left)")
+                        log(f"WARNING: 2 minutes remaining! ({format_minutes(remaining)} left)")
                         show_warning_async(
-                            "PlayLimit - 5 Minutes Left!",
-                            f"Only 5 minutes of game time remaining today!\n\n"
+                            "PlayLimit - 2 Minutes Left!",
+                            f"Only 2 minutes of game time remaining today!\n\n"
                             f"Used: {format_minutes(used)} / {format_minutes(limit)}\n"
                             f"Remaining: {format_minutes(remaining)}\n\n"
                             f"Games will close automatically when time is up.\n"
