@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.7.6"
+__version__ = "1.7.7"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -1689,19 +1689,20 @@ def hotkey_listener_thread():
 
     HOTKEY_ID_BONUS = 1
     HOTKEY_ID_DISABLE = 2
-    HOTKEY_ID_CLOSE = 3
+    HOTKEY_ID_TOGGLE = 3
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
-    VK_T = 0x54  # 'T'
+    VK_I = 0x49  # 'I'
     VK_D = 0x44  # 'D'
+    VK_E = 0x45  # 'E'
     WM_HOTKEY = 0x0312
 
-    ok1 = user32.RegisterHotKey(None, HOTKEY_ID_BONUS, MOD_CONTROL | MOD_ALT, VK_T)
+    ok1 = user32.RegisterHotKey(None, HOTKEY_ID_BONUS, MOD_CONTROL | MOD_SHIFT, VK_I)
     if not ok1:
-        log(f"Hotkey: RegisterHotKey Ctrl+Alt+T failed, error {kernel32.GetLastError()}")
+        log(f"Hotkey: RegisterHotKey Ctrl+Shift+I failed, error {kernel32.GetLastError()}")
     else:
-        log("Hotkey registered: Ctrl+Alt+T = +15 minutes for today (resets tomorrow)")
+        log("Hotkey registered: Ctrl+Shift+I = +15 minutes for today (resets tomorrow)")
 
     ok2 = user32.RegisterHotKey(None, HOTKEY_ID_DISABLE, MOD_CONTROL | MOD_SHIFT, VK_D)
     if not ok2:
@@ -1709,11 +1710,11 @@ def hotkey_listener_thread():
     else:
         log("Hotkey registered: Ctrl+Shift+D = disable for today + exit (re-enables if already disabled)")
 
-    ok3 = user32.RegisterHotKey(None, HOTKEY_ID_CLOSE, MOD_CONTROL | MOD_ALT, VK_D)
+    ok3 = user32.RegisterHotKey(None, HOTKEY_ID_TOGGLE, MOD_CONTROL | MOD_SHIFT, VK_E)
     if not ok3:
-        log(f"Hotkey: RegisterHotKey Ctrl+Alt+D failed, error {kernel32.GetLastError()}")
+        log(f"Hotkey: RegisterHotKey Ctrl+Shift+E failed, error {kernel32.GetLastError()}")
     else:
-        log("Hotkey registered: Ctrl+Alt+D = toggle disable/re-enable for today")
+        log("Hotkey registered: Ctrl+Shift+E = toggle disable/re-enable for today")
 
     if not ok1 and not ok2 and not ok3:
         return
@@ -1750,7 +1751,7 @@ def hotkey_listener_thread():
                             disable_app()
                     except Exception as e:
                         log(f"Disable hotkey error: {e}")
-                elif msg.wParam == HOTKEY_ID_CLOSE:
+                elif msg.wParam == HOTKEY_ID_TOGGLE:
                     try:
                         if is_disabled():
                             log("Hotkey pressed: Ctrl+Alt+D - currently disabled, re-enabling")
@@ -1768,7 +1769,7 @@ def hotkey_listener_thread():
         if ok2:
             user32.UnregisterHotKey(None, HOTKEY_ID_DISABLE)
         if 'ok3' in locals() and ok3:
-            user32.UnregisterHotKey(None, HOTKEY_ID_CLOSE)
+            user32.UnregisterHotKey(None, HOTKEY_ID_TOGGLE)
         log("Hotkeys unregistered")
 
 def console_thread():
@@ -1780,8 +1781,8 @@ def console_thread():
         log(f" {APP_NAME} v{__version__} - Game Time Limiter (GUI app, all games share one budget)")
         log("=" * 60)
         log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
-        log(f" Hotkey: Ctrl+Alt+T = +15 min for today (resets tomorrow)")
-        log(f" Hotkey: Ctrl+Alt+D = toggle disable/re-enable for today")
+        log(f" Hotkey: Ctrl+Shift+I = +15 min for today (resets tomorrow)")
+        log(f" Hotkey: Ctrl+Shift+E = toggle disable/re-enable for today")
         log(f" Hotkey: Ctrl+Shift+D = disable for today + exit (re-enables if already disabled)")
         if is_browser_block_exempt():
             log(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
@@ -2406,7 +2407,7 @@ def kill_browsers():
                 killed = True
         if killed:
             try:
-                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nask a parent to press Ctrl+Alt+D to disable.", style=0x10)
+                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nask a parent to press Ctrl+Shift+E to disable.", style=0x10)
             except Exception:
                 pass
         return killed
@@ -2669,7 +2670,7 @@ def main_loop():
         log(f"STATUS: ACTIVE - Browser block OFF on this PC (exempt) | Game limit ON")
     else:
         log(f"STATUS: ACTIVE - Browser block ON ({', '.join(BROWSER_PROCESSES)})")
-    log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Alt+T, Disable/re-enable: Ctrl+Alt+D, Disable+exit: Ctrl+Shift+D")
+    log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Shift+I, Disable/re-enable: Ctrl+Shift+E, Disable+exit: Ctrl+Shift+D")
     log(f"Watching: {', '.join(TARGET_PROCESSES)}")
     log(f"psutil available: {HAS_PSUTIL}")
 

@@ -46,11 +46,11 @@ Right-click uninstall.ps1 -> Run as Administrator
 
 MANUAL OVERRIDE (PARENT) - HOTKEY
 ---------------------------------
-Press Ctrl+Alt+T at any time (even while game is fullscreen) to add 15 minutes for TODAY ONLY.
+Press Ctrl+Shift+I at any time (even while game is fullscreen) to add 15 minutes for TODAY ONLY.
 - Each press adds another 15 min (press twice = +30 min)
 - The bonus resets to 0 at midnight, next day uses default 50min/2h again
 - A popup confirms: "Bonus Added! New total: X min"
-- If game was already blocked (time's up), pressing Ctrl+Alt+T unblocks it immediately
+- If game was already blocked (time's up), pressing Ctrl+Shift+I unblocks it immediately
 
 Other overrides:
 Option A - Reset today's counter (PowerShell as Admin):
@@ -100,7 +100,7 @@ Example state.json:
   "bonus_seconds": 900,
   "blocked_notified": false
 }
-(bonus_seconds = extra time added today via Ctrl+Alt+T)
+(bonus_seconds = extra time added today via Ctrl+Shift+I)
 
 SUPPORT
 -------

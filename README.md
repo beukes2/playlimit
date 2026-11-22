@@ -9,7 +9,7 @@ Limits Albion Online playtime for kids:
 - **Browser block: Chrome/Edge/Firefox/Brave/Opera etc. are auto-closed**
 - **Scheduled browser exception: browsers are allowed Tuesdays 08:00–13:30 (school IT class)**
 - **Not closable by kids:** close button disabled, Ctrl+C ignored, auto-restarts if killed, runs as SYSTEM when possible
-- **Parent hotkeys: `Ctrl+Alt+T` +15 min, `Ctrl+Alt+D` toggle disable/re-enable, `Ctrl+Shift+D` disable + exit**
+- **Parent hotkeys: `Ctrl+Shift+I` +15 min, `Ctrl+Shift+E` toggle disable/re-enable, `Ctrl+Shift+D` disable + exit**
 
 ## How It Works
 
@@ -20,7 +20,7 @@ Limits Albion Online playtime for kids:
 - **Browser block:** any browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`, `opera.exe`, `vivaldi.exe`, `iexplore.exe`...) is terminated within 5 seconds
 - Uses Task Scheduler + Startup shortcut so it survives reboots
 - **Not closable:** console X disabled, `Ctrl+C`/close ignored, task set `AllowHardTerminate=$false` + `RestartCount 10` (restarts in 1 min if killed), tries to run as `SYSTEM` (standard users get Access Denied), `Protect: anti-close enabled`
-- **Disable:** `Ctrl+Alt+D` toggles disable/re-enable for today while the app keeps running; `Ctrl+Shift+D` disables + exits. Both clear automatically at midnight — no `disabled.flag` and no scheduled-task changes
+- **Disable:** `Ctrl+Shift+E` toggles disable/re-enable for today while the app keeps running; `Ctrl+Shift+D` disables + exits. Both clear automatically at midnight — no `disabled.flag` and no scheduled-task changes
 
 ## Files
 
@@ -107,22 +107,22 @@ updater's environment automatically.
 
 ## Parent Hotkeys
 
-**`Ctrl+Alt+T`** — add 15 minutes for **today only** (even while game is fullscreen):
+**`Ctrl+Shift+I`** — add 15 minutes for **today only** (even while game is fullscreen):
 - Each press adds another 15 min (press twice = +30 min)
 - Bonus resets to 0 at midnight
 - Popup confirms: *"Bonus Added! New total: X min"*
 - If game was already blocked, unblocks it immediately
 
-**`Ctrl+Alt+D`** — **toggle disable / re-enable for today** (app keeps running):
+**`Ctrl+Shift+E`** — **toggle disable / re-enable for today** (app keeps running):
 - First press: instantly stops all blocking (Albion + browsers allowed), window/console shows `*** DISABLED ***`
 - Press the **same combo again**: re-enables all limits immediately, no restart needed
-- While disabled, `Ctrl+Alt+T` is ignored
+- While disabled, `Ctrl+Shift+I` is ignored
 - Clears automatically at midnight
 
 **`Ctrl+Shift+D`** — **disable + exit** (parent override):
 - If enabled: disables for today and exits the app
-- If already disabled (e.g. after `Ctrl+Alt+D`): re-enables and keeps running instead of exiting
-- If the app exited, relaunch **PlayLimit Time**; it stays disabled for that day until you press `Ctrl+Alt+D`
+- If already disabled (e.g. after `Ctrl+Shift+E`): re-enables and keeps running instead of exiting
+- If the app exited, relaunch **PlayLimit Time**; it stays disabled for that day until you press `Ctrl+Shift+E`
 
 There is no `disabled.flag` and the scheduled task is never disabled by these hotkeys.
 
@@ -131,7 +131,7 @@ Config in `albion_limiter.py`:
 WEEKDAY_LIMIT_SEC = 60 * 60   # Mon-Thu (shared budget, all games combined)
 WEEKEND_LIMIT_SEC = 120 * 60  # Fri-Sun (shared budget, Friday counts as weekend)
 WARNING_BEFORE_SEC = 2 * 60  # popup at 2 min left
-BONUS_STEP_SEC = 15 * 60     # per Ctrl+Alt+T
+BONUS_STEP_SEC = 15 * 60     # per Ctrl+Shift+I
 BROWSER_PROCESSES = ["chrome.exe","msedge.exe","firefox.exe","brave.exe",...]
 
 # Recurring windows where browser blocking is PAUSED (browsers may stay open).
@@ -273,7 +273,7 @@ Example `state.json`:
   "blocked_notified": false
 }
 ```
-`bonus_seconds` = extra time added today via `Ctrl+Alt+T`.
+`bonus_seconds` = extra time added today via `Ctrl+Shift+I`.
 
 ## Remote Monitoring Dashboard (v1.7.0+)
 
