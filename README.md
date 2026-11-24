@@ -124,7 +124,8 @@ http://localhost:8765
 From there you can, per machine:
 
 - **Enable / Disable** enforcement
-- **+15 / -15 minutes** for today
+- **+15 / −15 minutes** for today
+- **Reset bonus** to zero
 - **Set daily limit** (minutes; `0` = weekday/weekend default)
 - **View recent logs and daily usage history**
 - **Exit the app** (for maintenance/updates)

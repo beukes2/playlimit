@@ -237,6 +237,8 @@ def apply_command(host, action, value):
             if current is None:
                 current = int((machine.get("status") or {}).get("bonus_sec", 0) or 0)
             commands["bonus_seconds"] = max(0, int(current) + int(value or 0))
+        elif action == "bonus_reset":
+            commands["bonus_seconds"] = 0
         elif action == "set_limit":
             try:
                 minutes = int(value)

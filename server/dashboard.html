@@ -253,6 +253,7 @@ function card(m) {
     const v = prompt("Daily limit in minutes (0 = use weekday/weekend default)", Math.round((c.daily_limit_sec || s.base_limit_sec || 0) / 60));
     if (v !== null) command(m.host, "set_limit", Number(v));
   });
+  btn("Reset bonus", "", () => { if (confirm("Reset today's bonus to 0 on " + m.host + "?")) command(m.host, "bonus_reset"); });
   btn("Logs", "", () => openLogs(m.host));
   btn("Exit app", "", () => { if (confirm("Ask " + m.host + " to exit PlayLimit?")) command(m.host, "exit"); });
   el.appendChild(btns);
