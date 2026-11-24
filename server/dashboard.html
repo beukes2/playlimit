@@ -81,6 +81,10 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 600; }
   .issues { font-size: 12px; color: var(--amber); }
+  #inputValue { width: 100%; padding: 9px 11px; background: #101018; color: var(--text);
+                border: 1px solid var(--line); border-radius: 8px;
+                font: 14px "Segoe UI", sans-serif; margin-top: 6px; }
+  #inputValue:focus { outline: none; border-color: var(--blue); }
   @media (max-width: 600px) { header, main { padding-left: 14px; padding-right: 14px; } }
 </style>
 </head>
@@ -118,6 +122,21 @@
     <pre id="logText">loading...</pre>
     <h3 style="margin:14px 0 6px;font-size:14px">Daily usage</h3>
     <table id="histTable"><thead><tr><th>Date</th><th>Total</th><th>Games</th></tr></thead><tbody></tbody></table>
+  </div>
+</dialog>
+
+<dialog id="inputDlg">
+  <div class="dlg-head">
+    <h2 id="inputTitle">Rename PC</h2>
+    <button onclick="closeInputDlg()">Close</button>
+  </div>
+  <div class="dlg-body">
+    <label class="muted" id="inputLabel">Display name</label>
+    <input id="inputValue" autocomplete="off" />
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button onclick="closeInputDlg()">Cancel</button>
+      <button class="blue" onclick="saveInputDlg()">Save</button>
+    </div>
   </div>
 </dialog>
 
@@ -179,6 +198,8 @@ function renderServer() {
 }
 
 function renderMachines() {
+  // Do not replace the cards while a dialog is open (it would detach buttons).
+  if (document.getElementById("inputDlg").open || document.getElementById("logDlg").open) return;
   const grid = document.getElementById("grid");
   grid.textContent = "";
   document.getElementById("empty").style.display = MACHINES.length ? "none" : "block";
@@ -268,13 +289,14 @@ function card(m) {
   btn("-15 min", "", () => command(m.host, "bonus", -900));
   btn("+15 min", "blue", () => command(m.host, "bonus", 900));
   btn("Set limit", "", () => {
-    const v = prompt("Daily limit in minutes (0 = use weekday/weekend default)", Math.round((c.daily_limit_sec || s.base_limit_sec || 0) / 60));
-    if (v !== null) command(m.host, "set_limit", Number(v));
+    openInputDlg("Set daily limit", "Minutes (0 = weekday/weekend default)",
+      Math.round((c.daily_limit_sec || s.base_limit_sec || 0) / 60),
+      (v) => command(m.host, "set_limit", Number(v)));
   });
   btn("Reset bonus", "", () => { if (confirm("Reset today's bonus to 0 on " + (m.display_name || m.host) + "?")) command(m.host, "bonus_reset"); });
   btn("Rename", "", () => {
-    const v = prompt("New name for this PC", m.display_name || m.host);
-    if (v !== null && v.trim()) command(m.host, "rename", v.trim());
+    openInputDlg("Rename PC", "Display name", m.display_name || m.host,
+      (v) => command(m.host, "rename", v.trim()));
   });
   btn("Logs", "", () => openLogs(m.host));
   btn("Exit app", "", () => { if (confirm("Ask " + m.host + " to exit PlayLimit?")) command(m.host, "exit"); });
@@ -287,6 +309,36 @@ function card(m) {
     el.appendChild(iss);
   }
   return el;
+}
+
+let INPUT_CALLBACK = null;
+
+function openInputDlg(title, label, value, cb) {
+  INPUT_CALLBACK = cb;
+  document.getElementById("inputTitle").textContent = title;
+  document.getElementById("inputLabel").textContent = label;
+  const inp = document.getElementById("inputValue");
+  inp.value = value == null ? "" : value;
+  inp.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); saveInputDlg(); }
+    if (e.key === "Escape") { e.preventDefault(); closeInputDlg(); }
+  };
+  document.getElementById("inputDlg").showModal();
+  setTimeout(() => { inp.focus(); inp.select(); }, 30);
+}
+
+function closeInputDlg() {
+  try { document.getElementById("inputDlg").close(); } catch (e) {}
+  INPUT_CALLBACK = null;
+}
+
+function saveInputDlg() {
+  const inp = document.getElementById("inputValue");
+  const v = (inp.value || "").trim();
+  if (!v) { inp.focus(); return; }
+  const cb = INPUT_CALLBACK;
+  closeInputDlg();
+  if (cb) cb(v);
 }
 
 async function command(host, action, value) {
