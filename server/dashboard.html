@@ -152,6 +152,11 @@ function minText(sec) {
   if (h) return h + "h " + String(m).padStart(2, "0") + "m";
   return m + "m";
 }
+function signedMinText(sec) {
+  sec = Math.round(Number(sec) || 0);
+  if (sec === 0) return "0m";
+  return (sec < 0 ? "-" : "+") + minText(Math.abs(sec));
+}
 function shortTime(sec) {
   sec = Math.max(0, Math.round(Number(sec) || 0));
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
@@ -211,8 +216,12 @@ function card(m) {
   const c = m.commands || {};
   const disabled = (c.disabled !== null && c.disabled !== undefined) ? !!c.disabled : !!s.disabled;
   const used = Number(s.used_sec || 0);
-  const limit = Number(s.limit_sec || 0);
-  const pct = limit > 0 ? Math.min(100, Math.round(used * 100 / limit)) : 0;
+  const limit = Number(m.effective_limit_sec != null ? m.effective_limit_sec : (s.limit_sec || 0));
+  const base = Number(m.base_limit_sec != null ? m.base_limit_sec :
+    (c.daily_limit_sec != null ? c.daily_limit_sec : (s.base_limit_sec || 0)));
+  const adj = Number(m.adjustment_sec != null ? m.adjustment_sec :
+    (c.bonus_seconds != null ? c.bonus_seconds : (s.bonus_sec || 0)));
+  const pct = limit > 0 ? Math.min(100, Math.round(used * 100 / limit)) : 100;
 
   const el = document.createElement("div");
   el.className = "card" + (m.online ? "" : " offline") + (disabled ? " disabled" : "");
@@ -250,7 +259,7 @@ function card(m) {
     box.appendChild(k); box.appendChild(v);
     timers.appendChild(box);
   };
-  const leftNow = Math.max(0, Number(s.remaining_sec || 0));
+  const leftNow = Math.max(0, Number(m.left_sec != null ? m.left_sec : (s.remaining_sec || 0)));
   addTimer("LEFT NOW", shortTime(leftNow), leftNow <= 0);
   addTimer("PLAYED", shortTime(used), false);
   el.appendChild(timers);
@@ -275,8 +284,8 @@ function card(m) {
     const vv = document.createElement("div"); vv.className = "v"; vv.textContent = v;
     d.appendChild(kk); d.appendChild(vv); stats.appendChild(d);
   };
-  stat("Bonus", minText(c.bonus_seconds != null ? c.bonus_seconds : s.bonus_sec));
-  stat("Daily limit", minText(c.daily_limit_sec != null ? c.daily_limit_sec : s.base_limit_sec));
+  stat("Adjustment", signedMinText(adj));
+  stat("Base limit", minText(base));
   stat("Games", (s.games_running && s.games_running.length) ? s.games_running.slice(0, 2).join(", ") : "none");
   el.appendChild(stats);
 
@@ -294,7 +303,7 @@ function card(m) {
       Math.round((c.daily_limit_sec || s.base_limit_sec || 0) / 60),
       (v) => command(m.host, "set_limit", Number(v)));
   });
-  btn("Reset bonus", "", () => { if (confirm("Reset today's bonus to 0 on " + (m.display_name || m.host) + "?")) command(m.host, "bonus_reset"); });
+  btn("Reset adjustment", "", () => { if (confirm("Reset today's adjustment to 0 on " + (m.display_name || m.host) + "?")) command(m.host, "bonus_reset"); });
   btn("Set alias", "", () => {
     openInputDlg("Set alias", "Alias shown on this dashboard (PC hostname is unchanged)",
       m.display_name || m.host, (v) => command(m.host, "rename", v.trim()));

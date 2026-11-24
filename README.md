@@ -63,12 +63,12 @@ Why the old machine kept old code: previous versions ran from `C:\Program Files\
 (which standard users cannot overwrite) and only *staged* downloads without ever
 switching. v1.4.0 runs from `%ProgramData%` and hops automatically.
 
-Build + publish a new version (example v1.8.2):
+Build + publish a new version (example v1.8.3):
 ```powershell
 .\build.ps1
 .\build_server.ps1     # when server.py or server/dashboard.html changed
 git add albion_limiter.py server.py server/dashboard.html version.txt version_info.txt dist/PlayLimit.exe dist/PlayLimit.exe.sha256 dist/PlayLimitServer.exe
-git commit -m "v1.8.2 ..."
+git commit -m "v1.8.3 ..."
 git push
 ```
 `build.ps1` builds the real PyInstaller client, wraps it in the native
@@ -124,8 +124,8 @@ http://localhost:8765
 From there you can, per machine:
 
 - **Enable / Disable** enforcement
-- **+15 / −15 minutes** for today
-- **Reset bonus** to zero
+- **+15 / -15 minutes** — signed adjustment to today's total limit. `-15` reduces even the base hour (client 1.8.3+).
+- **Reset adjustment** to zero
 - **Set alias** for a PC (dashboard label only; the Windows hostname is unchanged)
 - **Set daily limit** (minutes; `0` = weekday/weekend default)
 - **View recent logs and daily usage history**

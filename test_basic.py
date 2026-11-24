@@ -89,6 +89,11 @@ class TestLimits(_TempDataDir):
     def test_effective_limit_no_state(self):
         self.assertEqual(al.get_effective_limit_sec(MON, {}), al.get_daily_limit_sec(MON))
 
+    def test_negative_adjustment_reduces_base_limit(self):
+        base = al.get_daily_limit_sec(MON)
+        self.assertEqual(al.get_effective_limit_sec(MON, {"bonus_seconds": -900}),
+                         max(0, base - 900))
+
 
 class TestState(_TempDataDir):
     def test_default_when_missing(self):
@@ -126,7 +131,7 @@ class TestState(_TempDataDir):
         }), encoding="utf-8")
         st = al.load_state()
         self.assertEqual(st["used_seconds"], 0)       # unparseable -> default
-        self.assertEqual(st["bonus_seconds"], 0)      # negative -> clamped
+        self.assertEqual(st["bonus_seconds"], -500)   # signed adjustment is valid
         self.assertIs(st["warned"], True)             # coerced to bool
         self.assertEqual(len(st["sessions"]), 1)      # only the valid row survives
         self.assertEqual(st["sessions"][0]["game"], "ok.exe")

@@ -164,11 +164,11 @@ def handle_heartbeat(payload):
         if "disabled" not in commands:
             commands["disabled"] = bool(status.get("disabled", False))
         if commands.get("bonus_seconds") is None:
-            commands["bonus_seconds"] = max(0, int(status.get("bonus_sec", 0) or 0))
+            commands["bonus_seconds"] = int(status.get("bonus_sec", 0) or 0)
         if machine.get("date") != date:
             machine["date"] = date
-            # New day on the client: start today's bonus from its current value.
-            commands["bonus_seconds"] = max(0, int(status.get("bonus_sec", 0) or 0))
+            # New day on the client: start today's adjustment from its current value.
+            commands["bonus_seconds"] = int(status.get("bonus_sec", 0) or 0)
         machine["last_seen"] = now
         machine["ip"] = str(payload.get("_source_ip") or "")[:64]
         machine["version"] = version
@@ -203,6 +203,20 @@ def machine_summary(host, machine, now):
     status = machine.get("status") or {}
     commands = machine.get("commands") or {}
     last = float(machine.get("last_seen") or 0)
+    try:
+        base = commands.get("daily_limit_sec")
+        if base is None:
+            base = status.get("base_limit_sec", 0)
+        base = int(base or 0)
+        adj = commands.get("bonus_seconds")
+        if adj is None:
+            adj = status.get("bonus_sec", 0)
+        adj = int(adj or 0)
+        used = int(status.get("used_sec", 0) or 0)
+    except Exception:
+        base, adj, used = 0, 0, 0
+    limit = max(0, base + adj)
+    left = max(0, limit - used)
     return {
         "host": host,
         "display_name": machine.get("display_name") or host,
@@ -212,6 +226,10 @@ def machine_summary(host, machine, now):
         "ip": machine.get("ip") or "",
         "version": machine.get("version") or "",
         "date": machine.get("date") or "",
+        "base_limit_sec": base,
+        "adjustment_sec": adj,
+        "effective_limit_sec": limit,
+        "left_sec": left,
         "status": status,
         "history": machine.get("history") or {},
         "commands": {
@@ -251,6 +269,13 @@ def machine_payload(host):
         return data
 
 
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v or "").split(".") if x.isdigit())
+    except Exception:
+        return ()
+
+
 def apply_command(host, action, value):
     with _lock:
         machine = _store["machines"].get(host)
@@ -262,10 +287,14 @@ def apply_command(host, action, value):
         elif action == "disable":
             commands["disabled"] = True
         elif action == "bonus":
+            delta = int(value or 0)
+            if delta < 0 and version_tuple(machine.get("version")) < (1, 8, 3):
+                raise ValueError("Update this PC to 1.8.3 before subtracting below the base limit")
             current = commands.get("bonus_seconds")
             if current is None:
                 current = int((machine.get("status") or {}).get("bonus_sec", 0) or 0)
-            commands["bonus_seconds"] = max(0, int(current) + int(value or 0))
+            # Signed: +15 adds, -15 reduces even the base hour.
+            commands["bonus_seconds"] = int(current) + delta
         elif action == "bonus_reset":
             commands["bonus_seconds"] = 0
         elif action == "set_limit":

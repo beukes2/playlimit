@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.8.2"
+__version__ = "1.8.3"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -429,7 +429,7 @@ def get_effective_limit_sec(d: datetime.date = None, state: dict = None) -> int:
             bonus = int(s.get("bonus_seconds", 0))
         except Exception:
             pass
-    return base + bonus
+    return max(0, base + bonus)
 
 _state_lock = threading.Lock()
 
@@ -451,7 +451,8 @@ def _sanitize_state(data: dict, default: dict) -> dict:
     """
     st = {**default, **(data if isinstance(data, dict) else {})}
     st["used_seconds"] = max(0, _coerce_int(st.get("used_seconds"), 0))
-    st["bonus_seconds"] = max(0, _coerce_int(st.get("bonus_seconds"), 0))
+    # Signed adjustment: +15 adds, -15 reduces even the base weekday/weekend hour.
+    st["bonus_seconds"] = _coerce_int(st.get("bonus_seconds"), 0)
     st["warned"] = bool(st.get("warned"))
     st["blocked_notified"] = bool(st.get("blocked_notified"))
     st["last_seen_running"] = bool(st.get("last_seen_running"))
@@ -1620,7 +1621,7 @@ def _apply_server_commands(cmd: dict):
             log(f"LAN: daily limit {'default' if value is None else str(value//60) + ' min'}")
     if "bonus_seconds" in cmd and cmd.get("bonus_seconds") is not None:
         try:
-            bonus = max(0, int(cmd["bonus_seconds"]))
+            bonus = int(cmd["bonus_seconds"])
             with _state_lock:
                 st = load_state()
                 if int(st.get("bonus_seconds", 0) or 0) != bonus:
