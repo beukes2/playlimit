@@ -158,6 +158,7 @@ def handle_heartbeat(payload):
             # New day on the client: start today's bonus from its current value.
             commands["bonus_seconds"] = max(0, int(status.get("bonus_sec", 0) or 0))
         machine["last_seen"] = now
+        machine["ip"] = str(payload.get("_source_ip") or "")[:64]
         machine["version"] = version
         machine["status"] = status
         machine["history"] = history
@@ -179,6 +180,7 @@ def machine_summary(host, machine, now):
         "online": (now - last) < OFFLINE_AFTER_SEC,
         "last_seen": last,
         "last_seen_text": iso(last),
+        "ip": machine.get("ip") or "",
         "version": machine.get("version") or "",
         "date": machine.get("date") or "",
         "status": status,
@@ -345,8 +347,12 @@ class APIHandler(BaseHTTPRequestHandler):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                supplied = self.headers.get("X-PlayLimit-Secret") or payload.get("secret") or ""
-                if supplied != SECRET:
+                payload["_source_ip"] = self.client_address[0] if self.client_address else ""
+                supplied = (self.headers.get("X-PlayLimit-Secret") or payload.get("secret") or "").strip()
+                # Empty secret = LAN auto-discovery heartbeat, so a fresh client can
+                # appear without copying server.json. A wrong non-empty secret is
+                # still rejected. Dashboard/commands are localhost-only regardless.
+                if supplied and supplied != SECRET:
                     self._send(401, {"ok": False, "error": "bad secret"})
                     return
                 commands = handle_heartbeat(payload)

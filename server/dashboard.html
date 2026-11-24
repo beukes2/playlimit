@@ -94,10 +94,11 @@
   <div id="empty" class="empty" style="display:none">No machines have checked in yet.</div>
 
   <div class="setup">
-    <b>Add a client:</b> on each gaming PC, copy the file
+    <b>Add a client:</b> just run PlayLimit <b>1.8.0+</b> on the same LAN and keep
+    this server running. Each PC discovers the server automatically and appears
+    here within ~30 seconds. If discovery is blocked by a firewall, copy
     <a href="/server.json" download="server.json">server.json</a> into
-    <code>%ProgramData%\AlbionLimiter\server.json</code>, then restart PlayLimit.
-    It contains this server's LAN address and secret. Keep this server running.
+    <code>%ProgramData%\AlbionLimiter\server.json</code> on that PC as a fallback.
   </div>
 </main>
 
@@ -204,6 +205,7 @@ function card(m) {
   const meta = document.createElement("div");
   meta.className = "muted";
   meta.textContent = "v" + (m.version || "?") + "  \u00b7  " + (s.user || "?") +
+    (m.ip ? "  \u00b7  " + m.ip : "") +
     "  \u00b7  last seen " + (m.last_seen_text || "?");
   el.appendChild(meta);
 

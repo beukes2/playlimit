@@ -23,8 +23,10 @@ foreach ($rule in @(
     @{Name="PlayLimit Server (UDP 8766)"; Proto="UDP"; Port=8766}
 )) {
     Remove-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
+    # Home LANs are sometimes classified "Public" by Windows; open only these
+    # two server ports on both profiles so clients can reach the heartbeat API.
     New-NetFirewallRule -DisplayName $rule.Name -Direction Inbound -Action Allow `
-        -Protocol $rule.Proto -LocalPort $rule.Port -Profile Private | Out-Null
+        -Protocol $rule.Proto -LocalPort $rule.Port -Profile Private,Public | Out-Null
 }
 
 Write-Host "Creating Startup shortcut..."

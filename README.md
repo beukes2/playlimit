@@ -132,12 +132,14 @@ From there you can, per machine:
 Clients contact the server every **30 seconds** over the LAN. If the server is
 offline, each client keeps enforcing its last known settings and retries.
 
-**Add a client:** on the server dashboard click **Download client config**, copy
-`server.json` to `%ProgramData%\AlbionLimiter\server.json` on that PC, then
-restart PlayLimit. The file contains the server's LAN address and secret.
+**Add a client:** just run PlayLimit **1.8.0+** on the same LAN. It discovers the
+server automatically and appears in the dashboard within ~30 seconds. If UDP
+discovery is blocked, use **Download client config** and copy `server.json` to
+`%ProgramData%\AlbionLimiter\server.json` as a fallback.
 
 The server binds the dashboard to `127.0.0.1` only; the LAN port accepts
-authenticated heartbeats from clients. No data goes to GitHub.
+auto-discovery heartbeats (no config) and authenticated ones. Dashboard
+commands are localhost-only. No data goes to GitHub.
 
 Config in `albion_limiter.py`:
 ```python
@@ -303,8 +305,8 @@ receives a heartbeat from every machine every 30 seconds.
 
 First time on the parent PC: run **`server_install.bat`** as Administrator once.
 It copies the server to `%ProgramData%\PlayLimitServer`, opens TCP 8765 / UDP 8766
-on the Private firewall profile, creates a Startup shortcut, and starts it.
-After that it runs at every logon.
+on the Private+Public firewall profiles (home LANs are often classified Public),
+creates a Startup shortcut, and starts it. After that it runs at every logon.
 
 **Per machine the dashboard shows:** online/offline, version, current user,
 used/limit/remaining, bonus, daily limit, running games, recent log lines, and
@@ -313,11 +315,11 @@ daily usage history.
 **Controls:** Enable / Disable, −15 / +15 minutes today, Set daily limit
 (minutes; `0` = weekday/weekend default), view logs/history, and Exit app.
 
-**Add a client:**
-1. On the dashboard click **Download client config** (or open
-   `http://localhost:8765/server.json`).
-2. Copy `server.json` to `%ProgramData%\AlbionLimiter\server.json` on the other PC.
-3. Restart PlayLimit there.
+**Add a client:** run PlayLimit 1.8.0+ on that PC. It auto-discovers the server
+and appears within ~30 seconds. If discovery is blocked by a firewall, click
+**Download client config**, copy `server.json` to
+`%ProgramData%\AlbionLimiter\server.json` on that PC, and restart PlayLimit.
+The dashboard shows each machine's IP so you can confirm which PC it is.
 
 The server stores data in `C:\ProgramData\PlayLimitServer\`:
 `server_data.json` (machines/history/logs), `server_secret.txt`, `server.log`.
