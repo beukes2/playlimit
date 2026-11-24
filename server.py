@@ -290,11 +290,23 @@ def apply_command(host, action, value):
             delta = int(value or 0)
             if delta < 0 and version_tuple(machine.get("version")) < (1, 8, 3):
                 raise ValueError("Update this PC to 1.8.3 before subtracting below the base limit")
+            status = machine.get("status") or {}
             current = commands.get("bonus_seconds")
             if current is None:
-                current = int((machine.get("status") or {}).get("bonus_sec", 0) or 0)
-            # Signed: +15 adds, -15 reduces even the base hour.
-            commands["bonus_seconds"] = int(current) + delta
+                current = int(status.get("bonus_sec", 0) or 0)
+            current = int(current)
+            if delta > 0:
+                # +15 means "give 15 minutes of time left". If already at 0,
+                # raise the limit just enough to reach 15:00.
+                base = commands.get("daily_limit_sec")
+                base = int(base) if base is not None else int(status.get("base_limit_sec", 0) or 0)
+                limit_now = max(0, base + current)
+                used = int(status.get("used_sec", 0) or 0)
+                left = limit_now - used
+                if left <= 0:
+                    delta = (used + delta) - limit_now
+            # Signed: +15 adds time left, -15 reduces even the base hour.
+            commands["bonus_seconds"] = current + delta
         elif action == "bonus_reset":
             commands["bonus_seconds"] = 0
         elif action == "set_limit":

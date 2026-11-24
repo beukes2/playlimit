@@ -124,7 +124,7 @@ http://localhost:8765
 From there you can, per machine:
 
 - **Enable / Disable** enforcement
-- **+15 / -15 minutes** — signed adjustment to today's total limit. `-15` reduces even the base hour (client 1.8.3+).
+- **+15 / -15 minutes** — `+15` gives 15 minutes of **remaining** time (at 0:00 it jumps to 15:00); `-15` reduces even the base hour (client 1.8.3+).
 - **Reset adjustment** to zero
 - **Set alias** for a PC (dashboard label only; the Windows hostname is unchanged)
 - **Set daily limit** (minutes; `0` = weekday/weekend default)
