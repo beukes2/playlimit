@@ -63,12 +63,12 @@ Why the old machine kept old code: previous versions ran from `C:\Program Files\
 (which standard users cannot overwrite) and only *staged* downloads without ever
 switching. v1.4.0 runs from `%ProgramData%` and hops automatically.
 
-Build + publish a new version (example v1.8.0):
+Build + publish a new version (example v1.8.1):
 ```powershell
 .\build.ps1
 .\build_server.ps1     # when server.py or server/dashboard.html changed
 git add albion_limiter.py server.py server/dashboard.html version.txt version_info.txt dist/PlayLimit.exe dist/PlayLimit.exe.sha256 dist/PlayLimitServer.exe
-git commit -m "v1.8.0 ..."
+git commit -m "v1.8.1 ..."
 git push
 ```
 `build.ps1` builds the real PyInstaller client, wraps it in the native
@@ -132,6 +132,8 @@ From there you can, per machine:
 
 Clients contact the server every **30 seconds** over the LAN. If the server is
 offline, each client keeps enforcing its last known settings and retries.
+Dashboard commands are delivered **immediately** to 1.8.1+ clients via a
+long-poll; 1.8.0 clients apply them on their next 30-second heartbeat.
 
 **Add a client:** just run PlayLimit **1.8.0+** on the same LAN. It discovers the
 server automatically and appears in the dashboard within ~30 seconds. If UDP

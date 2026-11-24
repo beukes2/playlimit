@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -188,6 +188,7 @@ SERVER_OVERRIDES_FILE = DATA_DIR / "server_overrides.json"
 _server_url = None
 _server_daily_limit_sec = None
 _server_disabled_override = None
+_lan_longpoll_supported = False
 
 def _current_user() -> str:
     """Best-effort current OS username (for per-user usage in the monitor)."""
@@ -1641,6 +1642,7 @@ def _apply_server_commands(cmd: dict):
 
 def lan_heartbeat_once():
     """Send one status heartbeat to the LAN server and apply its commands."""
+    global _lan_longpoll_supported
     import urllib.error
     import urllib.request
     url = _server_base_url()
@@ -1657,6 +1659,7 @@ def lan_heartbeat_once():
         "history": load_history(),
         "logs": _tail_log_lines(LAN_LOG_LINES),
         "secret": secret,
+        "longpoll": True,
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -1664,20 +1667,22 @@ def lan_heartbeat_once():
         headers={"Content-Type": "application/json", "X-PlayLimit-Secret": secret},
     )
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=35) as resp:
             obj = json.loads(resp.read().decode("utf-8", errors="ignore"))
     except urllib.error.HTTPError as e:
         if e.code == 401:
             log_warn("LAN: server rejected the secret - check server.json")
         raise
+    _lan_longpoll_supported = bool(obj.get("longpoll"))
     _apply_server_commands(obj.get("commands") or {})
     return True
 
 def lan_thread():
-    global _server_url
+    global _server_url, _lan_longpoll_supported
     log(f"LAN: heartbeat thread started (every {LAN_HEARTBEAT_EVERY_SEC}s)")
     failures = 0
     while not _shutdown.is_set():
+        started = time.time()
         try:
             if lan_heartbeat_once():
                 if failures:
@@ -1690,9 +1695,15 @@ def lan_thread():
         except Exception as e:
             failures += 1
             _server_url = None
+            _lan_longpoll_supported = False
             if failures in (1, 10, 60):
                 log_warn(f"LAN: heartbeat failed: {e}")
-        _shutdown.wait(LAN_HEARTBEAT_EVERY_SEC)
+        # Long-poll-capable server: reconnect immediately so dashboard clicks
+        # apply in ~1s. Older server: keep the normal 30s cadence.
+        if _lan_longpoll_supported:
+            _shutdown.wait(1)
+        else:
+            _shutdown.wait(max(1, LAN_HEARTBEAT_EVERY_SEC - (time.time() - started)))
 
 # ---------- GITHUB LOG SHIPPING ----------
 # Every running copy periodically uploads its log so the parent PC can read all

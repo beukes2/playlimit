@@ -96,6 +96,18 @@ if not DASHBOARD_FILE.exists():
 
 _lock = threading.Lock()
 _store = {"machines": {}}
+_command_events = {}
+_events_lock = threading.Lock()
+LONGPOLL_WAIT_SEC = 25
+
+
+def event_for(host):
+    with _events_lock:
+        ev = _command_events.get(host)
+        if ev is None:
+            ev = threading.Event()
+            _command_events[host] = ev
+        return ev
 
 
 def load_store():
@@ -168,6 +180,22 @@ def handle_heartbeat(payload):
         if response.get("exit"):
             commands["exit"] = False
         save_store()
+
+    if payload.get("_longpoll"):
+        # Keep the client's request open until a dashboard command arrives (or
+        # the wait expires). This makes buttons apply in ~1s instead of waiting
+        # for the next 30s status heartbeat.
+        ev = event_for(host)
+        if not ev.is_set():
+            ev.wait(LONGPOLL_WAIT_SEC)
+        ev.clear()
+        with _lock:
+            machine = _store["machines"].get(host)
+            commands = machine.get("commands", {}) if machine else {}
+            response = dict(commands)
+            if response.get("exit"):
+                commands["exit"] = False
+                save_store()
     return response
 
 
@@ -252,6 +280,7 @@ def apply_command(host, action, value):
         else:
             raise ValueError("unknown action")
         save_store()
+    event_for(host).set()
     log("command %s for %s -> %s" % (action, host, value))
     return {"ok": True}
 
@@ -350,6 +379,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 payload["_source_ip"] = self.client_address[0] if self.client_address else ""
+                payload["_longpoll"] = bool(payload.get("longpoll"))
                 supplied = (self.headers.get("X-PlayLimit-Secret") or payload.get("secret") or "").strip()
                 # Empty secret = LAN auto-discovery heartbeat, so a fresh client can
                 # appear without copying server.json. A wrong non-empty secret is
@@ -358,7 +388,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._send(401, {"ok": False, "error": "bad secret"})
                     return
                 commands = handle_heartbeat(payload)
-                self._send(200, {"ok": True, "commands": commands})
+                self._send(200, {"ok": True, "commands": commands, "longpoll": True})
             except Exception as e:
                 self._send(400, {"ok": False, "error": str(e)})
             return
