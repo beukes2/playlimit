@@ -205,6 +205,7 @@ def machine_summary(host, machine, now):
     last = float(machine.get("last_seen") or 0)
     return {
         "host": host,
+        "display_name": machine.get("display_name") or host,
         "online": (now - last) < OFFLINE_AFTER_SEC,
         "last_seen": last,
         "last_seen_text": iso(last),
@@ -277,6 +278,11 @@ def apply_command(host, action, value):
             commands["daily_limit_sec"] = None
         elif action == "exit":
             commands["exit"] = True
+        elif action == "rename":
+            new_name = str(value or "").strip()[:40]
+            if not new_name:
+                raise ValueError("name cannot be empty")
+            machine["display_name"] = new_name
         else:
             raise ValueError("unknown action")
         save_store()

@@ -195,7 +195,7 @@ function card(m) {
   top.className = "row";
   const name = document.createElement("div");
   name.className = "host";
-  name.textContent = m.host;
+  name.textContent = m.display_name || m.host;
   const badge = document.createElement("span");
   badge.className = "badge " + (m.online ? "" : "off");
   badge.textContent = m.online ? "online" : "offline";
@@ -253,7 +253,11 @@ function card(m) {
     const v = prompt("Daily limit in minutes (0 = use weekday/weekend default)", Math.round((c.daily_limit_sec || s.base_limit_sec || 0) / 60));
     if (v !== null) command(m.host, "set_limit", Number(v));
   });
-  btn("Reset bonus", "", () => { if (confirm("Reset today's bonus to 0 on " + m.host + "?")) command(m.host, "bonus_reset"); });
+  btn("Reset bonus", "", () => { if (confirm("Reset today's bonus to 0 on " + (m.display_name || m.host) + "?")) command(m.host, "bonus_reset"); });
+  btn("Rename", "", () => {
+    const v = prompt("New name for this PC", m.display_name || m.host);
+    if (v !== null && v.trim()) command(m.host, "rename", v.trim());
+  });
   btn("Logs", "", () => openLogs(m.host));
   btn("Exit app", "", () => { if (confirm("Ask " + m.host + " to exit PlayLimit?")) command(m.host, "exit"); });
   el.appendChild(btns);
@@ -281,7 +285,8 @@ async function command(host, action, value) {
 
 async function openLogs(host) {
   LOG_HOST = host;
-  document.getElementById("logTitle").textContent = host + " - logs & usage";
+  const m = MACHINES.find(x => x.host === host);
+  document.getElementById("logTitle").textContent = (m && (m.display_name || m.host) || host) + " - logs & usage";
   document.getElementById("logText").textContent = "loading...";
   document.getElementById("logMeta").textContent = "";
   document.querySelector("#histTable tbody").textContent = "";

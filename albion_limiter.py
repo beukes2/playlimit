@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -2468,6 +2468,88 @@ def _tasklist_game_hits(text: str):
         pass
     return hits
 
+def _scan_game_processes():
+    """Fast game scan: one psutil process table + in-memory ancestry walk.
+
+    Previously this called cmdline()/parent() for every process (~274) every
+    5 seconds, taking ~6s and pinning a CPU core. Now only Java hosts need
+    cmdline(); Steam ancestry is resolved from the prebuilt pid->ppid map.
+    Returns (display_names, psutil_Process_targets).
+    """
+    found = {}
+    targets = []
+    if HAS_PSUTIL:
+        try:
+            procs = list(psutil.process_iter(['pid', 'ppid', 'name']))
+        except Exception as e:
+            log(f"psutil scan error: {e}")
+            procs = []
+        by_pid = {}
+        ppid_by_pid = {}
+        name_by_pid = {}
+        for p in procs:
+            try:
+                info = p.info or {}
+                pid = info.get('pid') or p.pid
+                by_pid[pid] = p
+                ppid_by_pid[pid] = info.get('ppid') or 0
+                name_by_pid[pid] = info.get('name') or ""
+            except Exception:
+                continue
+
+        def ancestor_names(pid, max_depth=6):
+            names = []
+            cur = pid
+            for _ in range(max_depth):
+                parent = ppid_by_pid.get(cur)
+                if not parent or parent not in by_pid:
+                    break
+                nm = name_by_pid.get(parent) or ""
+                if nm:
+                    names.append(nm)
+                cur = parent
+            return names
+
+        for pid, p in by_pid.items():
+            try:
+                name = name_by_pid.get(pid) or ""
+                nl = name.lower()
+                if not nl:
+                    continue
+                if nl in GAME_PROCESSES_SET or ("albion" in nl and nl.endswith(".exe")):
+                    found[nl] = name
+                    targets.append(p)
+                    continue
+                if nl in STEAM_NON_GAME_SET:
+                    continue
+                cmd = []
+                if nl in JAVA_MINECRAFT_SET:
+                    try:
+                        cmd = p.cmdline()
+                    except Exception:
+                        cmd = []
+                if _is_game_process(name, cmd, ancestor_names(pid)):
+                    found[nl] = name
+                    targets.append(p)
+            except Exception:
+                continue
+
+    # tasklist union pass (elevated games psutil cannot inspect)
+    try:
+        out = subprocess.check_output('tasklist /FO CSV /NH', shell=True, text=True,
+                                      timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+        for hit in _tasklist_game_hits(out):
+            found[hit] = hit
+    except Exception as e:
+        log(f"tasklist check failed: {e}")
+
+    names = sorted(found.values(), key=str.lower)
+    exact = [n for n in names if n.lower().endswith('.exe')]
+    subs = [n for n in names if not n.lower().endswith('.exe')]
+    subs = [s for s in subs if not any(s in e.lower() for e in exact)]
+    return exact + subs, targets
+
+
 def get_running_games():
     """Sorted display names of currently running games (shared 1-hour budget).
 
@@ -2475,9 +2557,11 @@ def get_running_games():
     name pass, because elevated/protected processes are invisible to psutil for a
     standard user but their image names still show in tasklist.
 
-    Performance: name-only iteration first; expensive cmdline/parent lookups only
-    for processes that are not already decided by name (keeps the 5s tick on time).
+    Performance: one process table + in-memory ancestry walk (see
+    _scan_game_processes); keeps the 5s tick fast.
     """
+    names, _ = _scan_game_processes()
+    return names
     found = {}
     if HAS_PSUTIL:
         try:
@@ -2639,24 +2723,7 @@ def kill_games():
     if HAS_PSUTIL:
         targets = []
         try:
-            for p in psutil.process_iter(['name', 'pid']):
-                try:
-                    info = p.info or {}
-                    name = info.get('name') or ""
-                    nl = name.lower()
-                    if nl in GAME_PROCESSES_SET or ("albion" in nl and nl.endswith(".exe")):
-                        targets.append(p)
-                        continue
-                    if nl in STEAM_NON_GAME_SET or not nl:
-                        continue
-                    try:
-                        cmd = p.cmdline()
-                    except Exception:
-                        cmd = []
-                    if _is_game_process(name, cmd, _ancestor_names(p)):
-                        targets.append(p)
-                except Exception:
-                    continue
+            _, targets = _scan_game_processes()
         except Exception as e:
             log(f"kill scan error: {e}")
         for p in targets:
