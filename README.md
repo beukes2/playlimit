@@ -126,7 +126,7 @@ From there you can, per machine:
 - **Enable / Disable** enforcement
 - **+15 / −15 minutes** for today
 - **Reset bonus** to zero
-- **Rename** a PC (display name only; the hostname is unchanged)
+- **Set alias** for a PC (dashboard label only; the Windows hostname is unchanged)
 - **Set daily limit** (minutes; `0` = weekday/weekend default)
 - **View recent logs and daily usage history**
 - **Exit the app** (for maintenance/updates)

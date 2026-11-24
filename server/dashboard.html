@@ -127,7 +127,7 @@
 
 <dialog id="inputDlg">
   <div class="dlg-head">
-    <h2 id="inputTitle">Rename PC</h2>
+    <h2 id="inputTitle">Set alias</h2>
     <button onclick="closeInputDlg()">Close</button>
   </div>
   <div class="dlg-body">
@@ -232,6 +232,7 @@ function card(m) {
   meta.className = "muted";
   meta.textContent = "v" + (m.version || "?") + "  \u00b7  " + (s.user || "?") +
     (m.ip ? "  \u00b7  " + m.ip : "") +
+    (m.display_name && m.display_name !== m.host ? "  \u00b7  host " + m.host : "") +
     "  \u00b7  last seen " + (m.last_seen_text || "?");
   el.appendChild(meta);
 
@@ -294,9 +295,9 @@ function card(m) {
       (v) => command(m.host, "set_limit", Number(v)));
   });
   btn("Reset bonus", "", () => { if (confirm("Reset today's bonus to 0 on " + (m.display_name || m.host) + "?")) command(m.host, "bonus_reset"); });
-  btn("Rename", "", () => {
-    openInputDlg("Rename PC", "Display name", m.display_name || m.host,
-      (v) => command(m.host, "rename", v.trim()));
+  btn("Set alias", "", () => {
+    openInputDlg("Set alias", "Alias shown on this dashboard (PC hostname is unchanged)",
+      m.display_name || m.host, (v) => command(m.host, "rename", v.trim()));
   });
   btn("Logs", "", () => openLogs(m.host));
   btn("Exit app", "", () => { if (confirm("Ask " + m.host + " to exit PlayLimit?")) command(m.host, "exit"); });
