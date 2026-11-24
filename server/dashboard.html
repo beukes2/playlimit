@@ -41,6 +41,11 @@
   .badge.warn { background: #40351d; color: var(--amber); }
   .muted { color: var(--muted); font-size: 12px; }
   .big { font-size: 24px; font-weight: 700; }
+  .timers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .timer { background: var(--panel2); border-radius: 8px; padding: 8px 10px; }
+  .timer .k { color: var(--muted); font-size: 11px; letter-spacing: .5px; }
+  .timer .big { font-size: 22px; margin-top: 2px; }
+  .timer.zero .big { color: var(--red); }
   .bar { height: 8px; background: var(--panel2); border-radius: 99px; overflow: hidden; }
   .bar > div { height: 100%; background: var(--green); width: 0; transition: width .3s; }
   .bar > div.hot { background: var(--amber); }
@@ -209,16 +214,29 @@ function card(m) {
     "  \u00b7  last seen " + (m.last_seen_text || "?");
   el.appendChild(meta);
 
-  const usage = document.createElement("div");
-  usage.className = "row";
-  const left = document.createElement("div");
-  left.className = "big";
-  left.textContent = shortTime(used) + " / " + shortTime(limit);
-  const right = document.createElement("div");
-  right.className = "muted";
-  right.textContent = disabled ? "DISABLED" : (shortTime(s.remaining_sec || 0) + " left");
-  usage.appendChild(left); usage.appendChild(right);
-  el.appendChild(usage);
+  const timers = document.createElement("div");
+  timers.className = "timers";
+  const addTimer = (label, value, zero) => {
+    const box = document.createElement("div");
+    box.className = "timer" + (zero ? " zero" : "");
+    const k = document.createElement("div");
+    k.className = "k";
+    k.textContent = label;
+    const v = document.createElement("div");
+    v.className = "big";
+    v.textContent = value;
+    box.appendChild(k); box.appendChild(v);
+    timers.appendChild(box);
+  };
+  const leftNow = Math.max(0, Number(s.remaining_sec || 0));
+  addTimer("LEFT NOW", shortTime(leftNow), leftNow <= 0);
+  addTimer("PLAYED", shortTime(used), false);
+  el.appendChild(timers);
+
+  const limitLine = document.createElement("div");
+  limitLine.className = "muted";
+  limitLine.textContent = "Limit " + shortTime(limit) + (disabled ? "  \u00b7  DISABLED" : "");
+  el.appendChild(limitLine);
 
   const bar = document.createElement("div");
   bar.className = "bar";
