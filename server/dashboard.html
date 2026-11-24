@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlayLimit Server</title>
+<style>
+  :root {
+    --bg: #151521; --panel: #1e1e2e; --panel2: #26263a;
+    --text: #e8e8f0; --muted: #9a9ab0; --line: #33334d;
+    --green: #00d98b; --red: #ff5d6c; --amber: #ffb74d; --blue: #5aa9ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { padding: 20px 24px 12px; display: flex; flex-wrap: wrap;
+           align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: .2px; }
+  h1 span { color: var(--blue); }
+  .serverbox { background: var(--panel); border: 1px solid var(--line);
+               border-radius: 12px; padding: 10px 14px; font-size: 12px;
+               color: var(--muted); display: flex; flex-wrap: wrap; gap: 14px; }
+  .serverbox b { color: var(--text); font-weight: 600; }
+  .serverbox a { color: var(--blue); text-decoration: none; }
+  main { padding: 8px 24px 40px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+             margin-bottom: 14px; color: var(--muted); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+         background: var(--green); margin-right: 6px; }
+  .dot.off { background: var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+          padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .card.offline { opacity: .58; }
+  .card.disabled { border-color: #6b4b00; box-shadow: inset 0 0 0 1px #6b4b00; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .host { font-size: 17px; font-weight: 700; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+           background: #1d4033; color: var(--green); text-transform: uppercase; letter-spacing: .4px; }
+  .badge.off { background: #3a2026; color: var(--red); }
+  .badge.warn { background: #40351d; color: var(--amber); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .big { font-size: 24px; font-weight: 700; }
+  .bar { height: 8px; background: var(--panel2); border-radius: 99px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--green); width: 0; transition: width .3s; }
+  .bar > div.hot { background: var(--amber); }
+  .bar > div.full { background: var(--red); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat { background: var(--panel2); border-radius: 8px; padding: 8px 10px; }
+  .stat .k { color: var(--muted); font-size: 11px; }
+  .stat .v { font-weight: 700; margin-top: 2px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 2px; }
+  button { cursor: pointer; border: 0; border-radius: 8px; padding: 7px 10px;
+           font: 12px "Segoe UI", sans-serif; font-weight: 600;
+           background: var(--panel2); color: var(--text); }
+  button:hover { background: #33334d; }
+  button.green { background: #13513d; color: #8affd0; }
+  button.red { background: #4d1b23; color: #ffb0b8; }
+  button.blue { background: #1b3a5c; color: #b5dcff; }
+  .empty { padding: 50px 20px; text-align: center; color: var(--muted);
+           border: 1px dashed var(--line); border-radius: 14px; }
+  .setup { margin-top: 18px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 12px; padding: 14px 16px; font-size: 13px; color: var(--muted); }
+  .setup code { color: var(--text); background: #101018; padding: 2px 6px; border-radius: 5px; }
+  .setup a { color: var(--blue); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+           border-radius: 14px; max-width: 900px; width: calc(100% - 40px); padding: 0; }
+  dialog::backdrop { background: rgba(0,0,0,.65); }
+  .dlg-head { display: flex; justify-content: space-between; align-items: center;
+              padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .dlg-head h2 { margin: 0; font-size: 17px; }
+  .dlg-body { padding: 14px 18px 20px; max-height: 70vh; overflow: auto; }
+  pre { background: #101018; border: 1px solid var(--line); border-radius: 8px;
+        padding: 10px; overflow: auto; font: 12px/1.4 Consolas, monospace; color: #c9c9dd; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .issues { font-size: 12px; color: var(--amber); }
+  @media (max-width: 600px) { header, main { padding-left: 14px; padding-right: 14px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>PlayLimit <span>Server</span></h1>
+  <div class="serverbox" id="serverbox">Connecting...</div>
+</header>
+<main>
+  <div class="toolbar">
+    <span><span class="dot" id="liveDot"></span><span id="liveText">loading</span></span>
+    <span id="lastRefresh" class="muted"></span>
+    <button class="blue" onclick="loadMachines()">Refresh</button>
+  </div>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" style="display:none">No machines have checked in yet.</div>
+
+  <div class="setup">
+    <b>Add a client:</b> on each gaming PC, copy the file
+    <a href="/server.json" download="server.json">server.json</a> into
+    <code>%ProgramData%\AlbionLimiter\server.json</code>, then restart PlayLimit.
+    It contains this server's LAN address and secret. Keep this server running.
+  </div>
+</main>
+
+<dialog id="logDlg">
+  <div class="dlg-head">
+    <h2 id="logTitle">Machine</h2>
+    <button onclick="document.getElementById('logDlg').close()">Close</button>
+  </div>
+  <div class="dlg-body">
+    <div class="muted" id="logMeta"></div>
+    <h3 style="margin:14px 0 6px;font-size:14px">Recent log</h3>
+    <pre id="logText">loading...</pre>
+    <h3 style="margin:14px 0 6px;font-size:14px">Daily usage</h3>
+    <table id="histTable"><thead><tr><th>Date</th><th>Total</th><th>Games</th></tr></thead><tbody></tbody></table>
+  </div>
+</dialog>
+
+<script>
+let SERVER = null;
+let MACHINES = [];
+let LOG_HOST = null;
+
+function esc(s) { return String(s == null ? "" : s); }
+function minText(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  if (h) return h + "h " + String(m).padStart(2, "0") + "m";
+  return m + "m";
+}
+function shortTime(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0");
+}
+
+async function loadMachines() {
+  try {
+    const r = await fetch("/api/machines", { cache: "no-store" });
+    const data = await r.json();
+    SERVER = data.server;
+    MACHINES = data.machines || [];
+    renderServer();
+    renderMachines();
+    document.getElementById("liveDot").className = "dot";
+    document.getElementById("liveText").textContent = "server running";
+    document.getElementById("lastRefresh").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("liveDot").className = "dot off";
+    document.getElementById("liveText").textContent = "server unreachable";
+  }
+}
+
+function renderServer() {
+  if (!SERVER) return;
+  const box = document.getElementById("serverbox");
+  box.textContent = "";
+  const add = (label, value) => {
+    const d = document.createElement("span");
+    const b = document.createElement("b");
+    b.textContent = label + ": ";
+    d.appendChild(b);
+    d.appendChild(document.createTextNode(value));
+    box.appendChild(d);
+  };
+  add("LAN", SERVER.api_url);
+  add("Secret", SERVER.secret);
+  add("Host", SERVER.host);
+  const link = document.createElement("a");
+  link.href = "/server.json";
+  link.download = "server.json";
+  link.textContent = "Download client config";
+  box.appendChild(link);
+}
+
+function renderMachines() {
+  const grid = document.getElementById("grid");
+  grid.textContent = "";
+  document.getElementById("empty").style.display = MACHINES.length ? "none" : "block";
+  for (const m of MACHINES) grid.appendChild(card(m));
+}
+
+function card(m) {
+  const s = m.status || {};
+  const c = m.commands || {};
+  const disabled = (c.disabled !== null && c.disabled !== undefined) ? !!c.disabled : !!s.disabled;
+  const used = Number(s.used_sec || 0);
+  const limit = Number(s.limit_sec || 0);
+  const pct = limit > 0 ? Math.min(100, Math.round(used * 100 / limit)) : 0;
+
+  const el = document.createElement("div");
+  el.className = "card" + (m.online ? "" : " offline") + (disabled ? " disabled" : "");
+
+  const top = document.createElement("div");
+  top.className = "row";
+  const name = document.createElement("div");
+  name.className = "host";
+  name.textContent = m.host;
+  const badge = document.createElement("span");
+  badge.className = "badge " + (m.online ? "" : "off");
+  badge.textContent = m.online ? "online" : "offline";
+  top.appendChild(name); top.appendChild(badge);
+  el.appendChild(top);
+
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  meta.textContent = "v" + (m.version || "?") + "  \u00b7  " + (s.user || "?") +
+    "  \u00b7  last seen " + (m.last_seen_text || "?");
+  el.appendChild(meta);
+
+  const usage = document.createElement("div");
+  usage.className = "row";
+  const left = document.createElement("div");
+  left.className = "big";
+  left.textContent = shortTime(used) + " / " + shortTime(limit);
+  const right = document.createElement("div");
+  right.className = "muted";
+  right.textContent = disabled ? "DISABLED" : (shortTime(s.remaining_sec || 0) + " left");
+  usage.appendChild(left); usage.appendChild(right);
+  el.appendChild(usage);
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const fill = document.createElement("div");
+  fill.style.width = pct + "%";
+  if (pct >= 100) fill.className = "full"; else if (pct >= 80) fill.className = "hot";
+  bar.appendChild(fill); el.appendChild(bar);
+
+  const stats = document.createElement("div");
+  stats.className = "stats";
+  const stat = (k, v) => {
+    const d = document.createElement("div"); d.className = "stat";
+    const kk = document.createElement("div"); kk.className = "k"; kk.textContent = k;
+    const vv = document.createElement("div"); vv.className = "v"; vv.textContent = v;
+    d.appendChild(kk); d.appendChild(vv); stats.appendChild(d);
+  };
+  stat("Bonus", minText(c.bonus_seconds != null ? c.bonus_seconds : s.bonus_sec));
+  stat("Daily limit", minText(c.daily_limit_sec != null ? c.daily_limit_sec : s.base_limit_sec));
+  stat("Games", (s.games_running && s.games_running.length) ? s.games_running.slice(0, 2).join(", ") : "none");
+  el.appendChild(stats);
+
+  const btns = document.createElement("div");
+  btns.className = "btns";
+  const btn = (label, cls, fn) => {
+    const b = document.createElement("button"); b.textContent = label; b.className = cls || "";
+    b.onclick = fn; btns.appendChild(b);
+  };
+  btn(disabled ? "Enable" : "Disable", disabled ? "green" : "red", () => command(m.host, disabled ? "enable" : "disable"));
+  btn("-15 min", "", () => command(m.host, "bonus", -900));
+  btn("+15 min", "blue", () => command(m.host, "bonus", 900));
+  btn("Set limit", "", () => {
+    const v = prompt("Daily limit in minutes (0 = use weekday/weekend default)", Math.round((c.daily_limit_sec || s.base_limit_sec || 0) / 60));
+    if (v !== null) command(m.host, "set_limit", Number(v));
+  });
+  btn("Logs", "", () => openLogs(m.host));
+  btn("Exit app", "", () => { if (confirm("Ask " + m.host + " to exit PlayLimit?")) command(m.host, "exit"); });
+  el.appendChild(btns);
+
+  if (s.recent_issues && s.recent_issues.length) {
+    const iss = document.createElement("div");
+    iss.className = "issues";
+    iss.textContent = "! " + s.recent_issues.slice(-1)[0].msg;
+    el.appendChild(iss);
+  }
+  return el;
+}
+
+async function command(host, action, value) {
+  try {
+    const r = await fetch("/api/command", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({host, action, value})
+    });
+    const data = await r.json();
+    if (!data.ok) alert(data.error || "command failed");
+    setTimeout(loadMachines, 300);
+  } catch (e) { alert("Server error: " + e); }
+}
+
+async function openLogs(host) {
+  LOG_HOST = host;
+  document.getElementById("logTitle").textContent = host + " - logs & usage";
+  document.getElementById("logText").textContent = "loading...";
+  document.getElementById("logMeta").textContent = "";
+  document.querySelector("#histTable tbody").textContent = "";
+  document.getElementById("logDlg").showModal();
+  await refreshLogs();
+}
+
+async function refreshLogs() {
+  if (!LOG_HOST) return;
+  try {
+    const r = await fetch("/api/machine?host=" + encodeURIComponent(LOG_HOST), {cache:"no-store"});
+    const m = await r.json();
+    if (!m || m.ok === false) return;
+    const s = m.status || {};
+    document.getElementById("logMeta").textContent =
+      "v" + (m.version || "?") + "  \u00b7  " + (s.user || "?") + "  \u00b7  updated " + (m.last_seen_text || "?");
+    document.getElementById("logText").textContent = (m.logs || []).join("\n") || "(no log lines yet)";
+    const tbody = document.querySelector("#histTable tbody");
+    tbody.textContent = "";
+    const days = (m.history && m.history.days) || {};
+    const keys = Object.keys(days).sort().reverse().slice(0, 10);
+    if (!keys.length) {
+      const tr = document.createElement("tr"); const td = document.createElement("td");
+      td.colSpan = 3; td.textContent = "No history yet."; tr.appendChild(td); tbody.appendChild(tr);
+    }
+    for (const d of keys) {
+      const day = days[d] || {};
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td"); td1.textContent = d;
+      const td2 = document.createElement("td"); td2.textContent = minText(day.total_sec || 0);
+      const td3 = document.createElement("td");
+      const games = Object.entries(day.per_game || {}).sort((a,b)=>b[1]-a[1]).slice(0,4);
+      td3.textContent = games.map(([g,v]) => g + " " + minText(v)).join(", ");
+      tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tbody.appendChild(tr);
+    }
+  } catch (e) {
+    document.getElementById("logText").textContent = "Failed to load logs: " + e;
+  }
+}
+
+loadMachines();
+setInterval(loadMachines, 5000);
+setInterval(() => { if (document.getElementById("logDlg").open) refreshLogs(); }, 5000);
+</script>
+</body>
+</html>

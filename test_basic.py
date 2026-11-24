@@ -36,7 +36,8 @@ class _TempDataDir(unittest.TestCase):
         d = Path(self._tmp.name)
         self._saved = {k: getattr(al, k) for k in
                        ("DATA_DIR", "STATE_FILE", "STATUS_FILE", "LOG_FILE", "HISTORY_FILE",
-                        "DASHBOARD_FILE", "DISABLE_FLAG_FILE")}
+                        "DASHBOARD_FILE", "DISABLE_FLAG_FILE", "SERVER_CONFIG_FILE",
+                        "SERVER_OVERRIDES_FILE")}
         al.DATA_DIR = d
         al.STATE_FILE = d / "state.json"
         al.STATUS_FILE = d / "status.json"
@@ -44,6 +45,11 @@ class _TempDataDir(unittest.TestCase):
         al.HISTORY_FILE = d / "history.json"
         al.DASHBOARD_FILE = d / "dashboard.html"
         al.DISABLE_FLAG_FILE = d / "disabled.flag"
+        al.SERVER_CONFIG_FILE = d / "server.json"
+        al.SERVER_OVERRIDES_FILE = d / "server_overrides.json"
+        al._server_daily_limit_sec = None
+        al._server_disabled_override = None
+        al._server_url = None
         # reset the in-memory issue buffer between tests
         with al._errors_lock:
             al._recent_issues.clear()
@@ -323,6 +329,41 @@ class TestDisableToggle(_TempDataDir):
         al.enable_app()
         self.assertFalse(al.is_disabled())
         self.assertFalse(al.DISABLE_FLAG_FILE.exists())
+
+
+class TestServerControl(_TempDataDir):
+    def test_daily_limit_override(self):
+        al._server_daily_limit_sec = 90 * 60
+        self.assertEqual(al.get_daily_limit_sec(), 90 * 60)
+
+    def test_apply_disable_limit_bonus_and_reload(self):
+        al._apply_server_commands({
+            "disabled": True,
+            "daily_limit_sec": 90 * 60,
+            "bonus_seconds": 15 * 60,
+        })
+        self.assertTrue(al.is_disabled())
+        self.assertEqual(al.get_daily_limit_sec(), 90 * 60)
+        state = al.load_state()
+        self.assertEqual(state["bonus_seconds"], 15 * 60)
+        self.assertEqual(state["disabled_date"], datetime.date.today().isoformat())
+
+        # The last server settings survive a client restart.
+        al._server_daily_limit_sec = None
+        al._server_disabled_override = None
+        al._load_server_overrides_at_startup()
+        self.assertTrue(al.is_disabled())
+        self.assertEqual(al.get_daily_limit_sec(), 90 * 60)
+
+        al._apply_server_commands({
+            "disabled": False,
+            "daily_limit_sec": None,
+            "bonus_seconds": 0,
+        })
+        self.assertFalse(al.is_disabled())
+        self.assertIsNone(al.load_state()["disabled_date"])
+        self.assertEqual(al.load_state()["bonus_seconds"], 0)
+        self.assertNotEqual(al.get_daily_limit_sec(), 90 * 60)
 
 
 class TestDashboard(_TempDataDir):

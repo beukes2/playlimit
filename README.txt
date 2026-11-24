@@ -44,29 +44,28 @@ UNINSTALL
 ---------
 Right-click uninstall.ps1 -> Run as Administrator
 
-MANUAL OVERRIDE (PARENT) - HOTKEY
+PARENT CONTROL - PLAYLIMIT SERVER
 ---------------------------------
-Press Ctrl+Shift+I at any time (even while game is fullscreen) to add 15 minutes for TODAY ONLY.
-- Each press adds another 15 min (press twice = +30 min)
-- The bonus resets to 0 at midnight, next day uses default 50min/2h again
-- A popup confirms: "Bonus Added! New total: X min"
-- If game was already blocked (time's up), pressing Ctrl+Shift+I unblocks it immediately
+There are NO local hotkeys.
+Run dist\PlayLimitServer.exe on the parent PC and open:
+  http://localhost:8767
+From the dashboard you can enable/disable any PC, add/remove today's minutes,
+set a daily limit, view logs/history, or ask a PC to exit.
+
+Add a client:
+  1. Dashboard -> Download client config (server.json)
+  2. Copy it to %ProgramData%\AlbionLimiter\server.json on that PC
+  3. Restart PlayLimit
+Clients heartbeat every 30 seconds over the LAN.
 
 Other overrides:
 Option A - Reset today's counter (PowerShell as Admin):
   Remove-Item C:\ProgramData\AlbionLimiter\state.json
   Restart-ScheduledTask -TaskName AlbionLimiter
 
-Option B - Edit limits (edit albion_limiter.py in C:\Program Files\AlbionLimiter):
-  Change WEEKDAY_LIMIT_SEC = 50*60  to desired seconds
-  Change WEEKEND_LIMIT_SEC = 120*60
-  Change BONUS_STEP_SEC = 15*60
-  Then restart task: Start-ScheduledTask AlbionLimiter
-
-Option C - Toggle disable for today:
-  Ctrl+Alt+D toggles disable/re-enable while the app keeps running.
-  Ctrl+Shift+D disables for today and exits (relaunch PlayLimit Time, then Ctrl+Alt+D to re-enable).
-  Both clear automatically at midnight. No disabled.flag or scheduled-task change is used.
+Option B - Edit default limits (albion_limiter.py):
+  Change WEEKDAY_LIMIT_SEC and WEEKEND_LIMIT_SEC, then rebuild with build.ps1.
+  Per-machine overrides are done from the PlayLimit Server dashboard.
 
 FAQ
 ---
@@ -100,7 +99,7 @@ Example state.json:
   "bonus_seconds": 900,
   "blocked_notified": false
 }
-(bonus_seconds = extra time added today via Ctrl+Shift+I)
+(bonus_seconds = extra time added today from PlayLimit Server)
 
 SUPPORT
 -------

@@ -9,7 +9,7 @@ Limits Albion Online playtime for kids:
 - **Browser block: Chrome/Edge/Firefox/Brave/Opera etc. are auto-closed**
 - **Scheduled browser exception: browsers are allowed Tuesdays 08:00–13:30 (school IT class)**
 - **Not closable by kids:** close button disabled, Ctrl+C ignored, auto-restarts if killed, runs as SYSTEM when possible
-- **Parent hotkeys: `Ctrl+Shift+I` +15 min, `Ctrl+Shift+E` toggle disable/re-enable, `Ctrl+Shift+D` disable + exit**
+- **No local hotkeys:** every PC is controlled from one **PlayLimit Server** dashboard on the parent PC (LAN, 30-second heartbeats)
 
 ## How It Works
 
@@ -20,21 +20,26 @@ Limits Albion Online playtime for kids:
 - **Browser block:** any browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`, `opera.exe`, `vivaldi.exe`, `iexplore.exe`...) is terminated within 5 seconds
 - Uses Task Scheduler + Startup shortcut so it survives reboots
 - **Not closable:** console X disabled, `Ctrl+C`/close ignored, task set `AllowHardTerminate=$false` + `RestartCount 10` (restarts in 1 min if killed), tries to run as `SYSTEM` (standard users get Access Denied), `Protect: anti-close enabled`
-- **Disable:** `Ctrl+Shift+E` toggles disable/re-enable for today while the app keeps running; `Ctrl+Shift+D` disables + exits. Both clear automatically at midnight — no `disabled.flag` and no scheduled-task changes
+- **Control:** PlayLimit Server can enable/disable any PC, add/remove today's minutes, set a daily limit, or ask it to exit. No local hotkeys and no `disabled.flag`
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `albion_limiter.py` | Main service — polling + hotkey + auto-update + log/status shipping |
-| `dist/PlayLimit.exe` | Native launcher wrapping the real app (auto-updated on launch) |
-| `build.ps1` | Builds the real app + native launcher + SHA in one step |
+| `albion_limiter.py` | Client limiter — game detection + 30s LAN heartbeat + server commands |
+| `dist/PlayLimit.exe` | Native launcher wrapping the real client app |
+| `server.py` | LAN server: heartbeat API, commands, local dashboard, discovery |
+| `server/dashboard.html` | Parent dashboard: live machines, time controls, logs/history |
+| `dist/PlayLimitServer.exe` | Built server + dashboard (run this on the parent PC) |
+| `build.ps1` | Builds the client real app + native launcher + SHA |
+| `build_server.ps1` | Builds `dist/PlayLimitServer.exe` |
+| `server_install.bat` / `.ps1` | One-time server setup: firewall rules + run at logon |
 | `bootstrap/` | C# source for the native launcher/apply helper |
 | `install.ps1` | Installer (run as Administrator) |
 | `install.bat` | Batch wrapper for installer |
 | `uninstall.ps1` | Uninstaller (run as Administrator) |
 | `repair.bat` / `repair.ps1` | One-click repair/forced update for a machine stuck on an old version |
-| `monitor/dashboard.html` | Remote monitoring dashboard - bundled into the exe and opened by the **Logs** button |
+| `monitor/dashboard.html` | Legacy GitHub monitor (replaced by `server/dashboard.html`) |
 | `test_matcher.py` | Game-detection matcher tests |
 | `test_basic.py` | Unit tests: limits, state, sessions, status, logging |
 | `README.txt` | Plain-text docs |
@@ -58,15 +63,17 @@ Why the old machine kept old code: previous versions ran from `C:\Program Files\
 (which standard users cannot overwrite) and only *staged* downloads without ever
 switching. v1.4.0 runs from `%ProgramData%` and hops automatically.
 
-Build + publish a new version (example v1.7.5):
+Build + publish a new version (example v1.8.0):
 ```powershell
 .\build.ps1
-git add albion_limiter.py version.txt version_info.txt dist/PlayLimit.exe dist/PlayLimit.exe.sha256
-git commit -m "v1.7.5 ..."
+.\build_server.ps1     # when server.py or server/dashboard.html changed
+git add albion_limiter.py server.py server/dashboard.html version.txt version_info.txt dist/PlayLimit.exe dist/PlayLimit.exe.sha256 dist/PlayLimitServer.exe
+git commit -m "v1.8.0 ..."
 git push
 ```
-`build.ps1` builds the real PyInstaller app, wraps it in the native
+`build.ps1` builds the real PyInstaller client, wraps it in the native
 `dist\PlayLimit.exe` **launcher**, regenerates the SHA, and verifies both versions.
+`build_server.ps1` builds `dist\PlayLimitServer.exe` with the dashboard bundled.
 
 **Why a launcher?** The old updater launches the downloaded exe with PyInstaller's
 private `_PYI_*` variables in its environment, which can make a normal PyInstaller
@@ -105,33 +112,39 @@ updater's environment automatically.
    Get-Content C:\ProgramData\AlbionLimiter\limiter.log -Tail 20
    ```
 
-## Parent Hotkeys
+## Parent Control (PlayLimit Server)
 
-**`Ctrl+Shift+I`** — add 15 minutes for **today only** (even while game is fullscreen):
-- Each press adds another 15 min (press twice = +30 min)
-- Bonus resets to 0 at midnight
-- Popup confirms: *"Bonus Added! New total: X min"*
-- If game was already blocked, unblocks it immediately
+**There are no local hotkeys on the client.** Run `dist\PlayLimitServer.exe` on
+the parent PC and open:
 
-**`Ctrl+Shift+E`** — **toggle disable / re-enable for today** (app keeps running):
-- First press: instantly stops all blocking (Albion + browsers allowed), window/console shows `*** DISABLED ***`
-- Press the **same combo again**: re-enables all limits immediately, no restart needed
-- While disabled, `Ctrl+Shift+I` is ignored
-- Clears automatically at midnight
+```
+http://localhost:8765
+```
 
-**`Ctrl+Shift+D`** — **disable + exit** (parent override):
-- If enabled: disables for today and exits the app
-- If already disabled (e.g. after `Ctrl+Shift+E`): re-enables and keeps running instead of exiting
-- If the app exited, relaunch **PlayLimit Time**; it stays disabled for that day until you press `Ctrl+Shift+E`
+From there you can, per machine:
 
-There is no `disabled.flag` and the scheduled task is never disabled by these hotkeys.
+- **Enable / Disable** enforcement
+- **+15 / -15 minutes** for today
+- **Set daily limit** (minutes; `0` = weekday/weekend default)
+- **View recent logs and daily usage history**
+- **Exit the app** (for maintenance/updates)
+
+Clients contact the server every **30 seconds** over the LAN. If the server is
+offline, each client keeps enforcing its last known settings and retries.
+
+**Add a client:** on the server dashboard click **Download client config**, copy
+`server.json` to `%ProgramData%\AlbionLimiter\server.json` on that PC, then
+restart PlayLimit. The file contains the server's LAN address and secret.
+
+The server binds the dashboard to `127.0.0.1` only; the LAN port accepts
+authenticated heartbeats from clients. No data goes to GitHub.
 
 Config in `albion_limiter.py`:
 ```python
 WEEKDAY_LIMIT_SEC = 60 * 60   # Mon-Thu (shared budget, all games combined)
 WEEKEND_LIMIT_SEC = 120 * 60  # Fri-Sun (shared budget, Friday counts as weekend)
 WARNING_BEFORE_SEC = 2 * 60  # popup at 2 min left
-BONUS_STEP_SEC = 15 * 60     # per Ctrl+Shift+I
+BONUS_STEP_SEC = 15 * 60     # server +15 button step
 BROWSER_PROCESSES = ["chrome.exe","msedge.exe","firefox.exe","brave.exe",...]
 
 # Recurring windows where browser blocking is PAUSED (browsers may stay open).
@@ -181,7 +194,7 @@ Right-click `uninstall.ps1` → **Run as Administrator**
 No, runs fully offline.
 
 **Can kids kill it in Task Manager?**  
-No — close button is disabled, Ctrl+C/Close are ignored (`SetConsoleCtrlHandler` + `DeleteMenu`), task has `AllowHardTerminate=$false` and `RestartCount 10` (auto-restarts in 1 min if killed). If installed as `SYSTEM` (default when run as Admin), standard users get `Access Denied` when trying to End Task. They need the admin password or `Ctrl+Shift+D` (which also needs physical access).
+No — close button is disabled, Ctrl+C/Close are ignored (`SetConsoleCtrlHandler` + `DeleteMenu`), task has `AllowHardTerminate=$false` and `RestartCount 10` (auto-restarts in 1 min if killed). If installed as `SYSTEM` (default when run as Admin), standard users get `Access Denied` when trying to End Task. They need the admin password or the PlayLimit Server **Exit app** button.
 
 **What if PC is off at midnight?**  
 Counter resets on next boot when date changes.
@@ -201,8 +214,8 @@ Every log line now carries a severity level:
 
 ```
 [2026-10-24 14:03:24] [INFO] Playing... 20m / 120m used, 1h 40m remaining
-[2026-10-24 14:05:01] [WARN] LogShip: PUT status/PC-01.json HTTP 409 ...
-[2026-10-24 14:05:02] [ERROR] UNCAUGHT exception in thread 'HotkeyListener'
+[2026-10-24 14:05:01] [WARN] LAN: heartbeat failed: timed out
+[2026-10-24 14:05:02] [ERROR] UNCAUGHT exception in thread 'TrayIcon'
 Traceback (most recent call last): ...
 ```
 
@@ -273,70 +286,43 @@ Example `state.json`:
   "blocked_notified": false
 }
 ```
-`bonus_seconds` = extra time added today via `Ctrl+Shift+I`.
+`bonus_seconds` = extra time added today via the PlayLimit Server dashboard.
 
-## Remote Monitoring Dashboard (v1.7.0+)
+## LAN Server (v1.8.0+)
 
-`monitor/dashboard.html` is a **single self-contained page** (no server, no build
-step) that shows every machine's live status by reading the private logs repo
-directly in your browser.
+The client no longer sends logs to GitHub and has **no local hotkeys**. Run
+`dist\PlayLimitServer.exe` on the parent PC; it serves a local dashboard and
+receives a heartbeat from every machine every 30 seconds.
 
-**Open it:** click the **Logs** button in the PlayLimit window (v1.7.4+), or
-double-click `monitor/dashboard.html` (or host it anywhere static). The Logs button
-opens a stable local copy at `%ProgramData%\AlbionLimiter\dashboard.html`, so the
-browser remembers your repo/token between runs.
-On first run it asks for:
-- the logs repo (`beukes2/playlimit-logs`), and
-- a GitHub **fine-grained, read-only** token (Contents → **Read-only**, scoped to
-  **only** the logs repo). This is different from the machines' write token — the
-  dashboard never needs write access. The token is stored only in that browser's
-  `localStorage` and is sent only to `api.github.com`.
+**Ports:**
+- TCP **8765** — client heartbeat API (LAN, secret-protected) **and** the
+  dashboard (dashboard/routes only accept localhost)
+- UDP **8766** — optional client auto-discovery
 
-**Overview (top of the page):**
-- **Today — per host & user:** a table of time used today per machine and per OS
-  user, with an all-machines total.
-- **This week — by game / browser / app:** horizontal bars of time per game (and a
-  `🌐 Browser` bucket), summed across all machines over the last 7 days.
-- **This week — total per day:** a 7-column bar chart of total time per day (today
-  highlighted).
+**Open the dashboard:** `http://localhost:8765`
 
-**Per machine:**
-- Live badge: **Playing / Idle / Blocked / Disabled / Offline** (offline = no
-  heartbeat for ~6 min).
-- Used-vs-limit progress bar, remaining time, bonus, weekday/weekend.
-- Heartbeat age + uptime, current user, running games, and flags
-  (`browser block on/off`, a `browser allowed now` pill during a scheduled
-  exception, `psutil`, error/warn counts).
-- Today's session timeline and the most recent WARN/ERROR lines.
-- A **View full log** button that pulls that day's `logs/<host>-<date>.log`.
+First time on the parent PC: run **`server_install.bat`** as Administrator once.
+It copies the server to `%ProgramData%\PlayLimitServer`, opens TCP 8765 / UDP 8766
+on the Private firewall profile, creates a Startup shortcut, and starts it.
+After that it runs at every logon.
 
-Auto-refreshes (default 30 s). Because machines ship `status.json` every ~2 min,
-the dashboard is near-live; the full log tail still ships every 10 min.
+**Per machine the dashboard shows:** online/offline, version, current user,
+used/limit/remaining, bonus, daily limit, running games, recent log lines, and
+daily usage history.
 
-**Try it with no setup:** open `monitor/dashboard.html?demo=1` to see the layout
-rendered with three sample machines (playing / blocked / offline) — no repo or
-token needed. Handy for a quick look or for testing UI changes.
+**Controls:** Enable / Disable, −15 / +15 minutes today, Set daily limit
+(minutes; `0` = weekday/weekend default), view logs/history, and Exit app.
 
-## Remote Logs (read all machines from this PC)
+**Add a client:**
+1. On the dashboard click **Download client config** (or open
+   `http://localhost:8765/server.json`).
+2. Copy `server.json` to `%ProgramData%\AlbionLimiter\server.json` on the other PC.
+3. Restart PlayLimit there.
 
-Every running copy (v1.4.1+) uploads its log to the **private** repo
-`beukes2/playlimit-logs` under `logs/<HOSTNAME>-<date>.log` — first upload ~60s
-after start, then every 10 min. Since **v1.7.0** each copy also ships a
-machine-readable heartbeat to `status/<HOSTNAME>.json` every ~2 min (this is what
-the dashboard reads). Read the logs from this PC with:
-```powershell
-gh repo clone beukes2/playlimit-logs "$env:TEMP\playlimit-logs" 2>$null
-Get-ChildItem "$env:TEMP\playlimit-logs\logs" | Sort-Object LastWriteTime -Descending
-Get-Content "$env:TEMP\playlimit-logs\logs\<HOST>-<date>.log" -Tail 30
-```
-Or browse: `https://github.com/beukes2/playlimit-logs/tree/master/logs`
-
-Setup (parent does this once per machine — the token is NEVER in the repo/exe):
-1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token
-2. Resource owner: beukes2, repository access: **Only select repositories → playlimit-logs**, permissions: **Contents → Read and write**, expiry: 1 year (note the date to rotate)
-3. As Admin on the machine, save it (no extra spaces/newlines) to `C:\ProgramData\AlbionLimiter\github_token.txt`
-4. Restart PlayLimit — log shows `LogShip: token found`, next upload within ~60s
-5. No token file = shipping silently off. The token can only touch the logs repo, nothing else.
+The server stores data in `C:\ProgramData\PlayLimitServer\`:
+`server_data.json` (machines/history/logs), `server_secret.txt`, `server.log`.
+If a client cannot reach the server it keeps enforcing its last known settings
+and retries every 30 seconds.
 
 ## Tests
 
@@ -348,8 +334,8 @@ python3 -m unittest test_basic -v   # limits, state + sanitization, sessions, st
 python3 test_matcher.py             # game-detection matcher contract
 ```
 
-The dashboard has a demo mode for a quick visual check — open
-`monitor/dashboard.html?demo=1` in any browser.
+The server dashboard has no external dependencies; it is served from
+`dist\PlayLimitServer.exe` at `http://localhost:8765`.
 
 ## Troubleshooting
 

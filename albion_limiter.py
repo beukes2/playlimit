@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.7.7"
+__version__ = "1.8.0"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -32,7 +32,7 @@ WARNING_BEFORE_SEC = 2 * 60          # 2 minute warning
 POLL_INTERVAL_SEC = 5                # check every 5 seconds
 TICK_CREDIT_CAP_SEC = 60             # max real seconds credited per tick (sleep/hibernate gaps)
 GRACEFUL_CLOSE_TIMEOUT = 15          # seconds to wait after WM_CLOSE before kill
-BONUS_STEP_SEC = 15 * 60             # added per Ctrl+Alt+T press
+BONUS_STEP_SEC = 15 * 60             # default server +15 button step
 
 # Game processes to watch. The 1-hour (Mon-Thu) / 120-min (Fri-Sun) budget is SHARED
 # across ALL games combined - any game running burns the same daily budget.
@@ -151,7 +151,7 @@ def is_browser_block_exempt() -> bool:
     return False
 
 # App control
-APP_DISABLED = False  # set by Ctrl+Alt+D / Ctrl+Shift+D hotkeys
+APP_DISABLED = False  # set by PlayLimit Server commands
 DISABLE_FLAG_FILE = None  # set after DATA_DIR known
 
 # State / log locations
@@ -174,8 +174,20 @@ STATE_FILE = DATA_DIR / "state.json"
 LOG_FILE = DATA_DIR / "limiter.log"
 STATUS_FILE = DATA_DIR / "status.json"   # machine-readable heartbeat for the remote monitor
 HISTORY_FILE = DATA_DIR / "history.json" # per-day usage history (per game/app + per user), kept across days
-DASHBOARD_FILE = DATA_DIR / "dashboard.html"  # local copy of monitor/dashboard.html (stable browser storage)
+DASHBOARD_FILE = DATA_DIR / "dashboard.html"  # legacy local copy (client no longer shows it)
 DISABLE_FLAG_FILE = DATA_DIR / "disabled.flag"
+
+# ---------- LAN SERVER CONTROL ----------
+# The client sends a heartbeat every 30s and obeys the parent dashboard.
+LAN_API_PORT = 8765
+LAN_DISCOVERY_PORT = 8766
+LAN_HEARTBEAT_EVERY_SEC = 30
+LAN_LOG_LINES = 120
+SERVER_CONFIG_FILE = DATA_DIR / "server.json"
+SERVER_OVERRIDES_FILE = DATA_DIR / "server_overrides.json"
+_server_url = None
+_server_daily_limit_sec = None
+_server_disabled_override = None
 
 def _current_user() -> str:
     """Best-effort current OS username (for per-user usage in the monitor)."""
@@ -350,7 +362,7 @@ def set_disabled_for_today(disabled: bool):
       * disabled=True  -> enforcement off until midnight
       * disabled=False -> enforcement back on immediately
     The scheduled task is never disabled, so the app can always start again and
-    clear the date after midnight. Ctrl+Alt+D toggles this value.
+    clear the date after midnight. PlayLimit Server toggles this value.
     """
     global APP_DISABLED
     APP_DISABLED = bool(disabled)
@@ -362,17 +374,17 @@ def set_disabled_for_today(disabled: bool):
     except Exception as e:
         log(f"Could not save disabled_date: {e}")
     if disabled:
-        log("=== PlayLimit DISABLED for today (Ctrl+Alt+D re-enables now; auto re-enables tomorrow) ===")
+        log("=== PlayLimit DISABLED for today (controlled by PlayLimit Server) ===")
     else:
         log("=== PlayLimit RE-ENABLED for today (all limits active again) ===")
 
 def disable_app():
-    """Ctrl+Shift+D while enabled: disable for the rest of today and exit."""
+    """Server command: disable for the rest of today and exit."""
     set_disabled_for_today(True)
-    request_shutdown("disabled via Ctrl+Shift+D")
+    request_shutdown("disabled by PlayLimit Server")
 
 def enable_app():
-    """Re-enable immediately (Ctrl+Alt+D, or Ctrl+Shift+D while already disabled)."""
+    """Server command: re-enable immediately."""
     set_disabled_for_today(False)
     try:
         if DISABLE_FLAG_FILE.exists():
@@ -390,7 +402,15 @@ def is_weekend(d: datetime.date = None) -> bool:
     return d.weekday() >= 5  # 5=Sat, 6=Sun
 
 def get_daily_limit_sec(d: datetime.date = None) -> int:
-    # Mon-Thu 45 min, Fri-Sun 120 min (Friday counts as weekend)
+    # Server-controlled override (if set), else Mon-Thu 60 / Fri-Sun 120.
+    global _server_daily_limit_sec
+    if _server_daily_limit_sec is not None:
+        try:
+            override = int(_server_daily_limit_sec)
+            if override > 0:
+                return override
+        except Exception:
+            pass
     if d is None:
         d = datetime.date.today()
     return WEEKEND_LIMIT_SEC if d.weekday() >= 4 else WEEKDAY_LIMIT_SEC
@@ -1256,7 +1276,7 @@ def do_install_steps():
     except Exception:
         pass
     # A disabled task means the app never starts again (e.g. left over from an
-    # older Ctrl+Shift+D). Self-heal it, which needs admin.
+    # older local hotkey versions). Self-heal it, which needs admin.
     needs_task_enable = False
     try:
         if _task_exists() and not _task_enabled():
@@ -1491,6 +1511,189 @@ def open_dashboard():
             except Exception as e2:
                 log_error(f"Dashboard: browser fallback failed: {e2}")
 
+# ---------- LAN SERVER CONTROL (client side) ----------
+def _load_json_file(path, default):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else default
+    except Exception:
+        return default
+
+def _save_json_file(path, data):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        log_warn(f"LAN: could not save {path.name}: {e}")
+
+def _load_server_config():
+    data = _load_json_file(SERVER_CONFIG_FILE, {})
+    url = str(data.get("url") or "").strip().rstrip("/")
+    secret = str(data.get("secret") or "").strip()
+    return url, secret
+
+def _discover_server():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(2.0)
+        s.sendto(b"PLAYLIMIT_DISCOVER", ("255.255.255.255", LAN_DISCOVERY_PORT))
+        data, _ = s.recvfrom(4096)
+        obj = json.loads(data.decode("utf-8", errors="ignore"))
+        return str(obj.get("url") or "").strip().rstrip("/")
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+def _server_base_url():
+    global _server_url
+    if _server_url:
+        return _server_url
+    url, _ = _load_server_config()
+    if not url:
+        url = _discover_server()
+    if url:
+        _server_url = url
+        return url
+    return None
+
+def _tail_log_lines(n: int = LAN_LOG_LINES):
+    try:
+        size = LOG_FILE.stat().st_size
+        with open(LOG_FILE, "rb") as f:
+            if size > 128 * 1024:
+                f.seek(-128 * 1024, os.SEEK_END)
+            data = f.read().decode("utf-8", errors="ignore")
+        return data.splitlines()[-n:]
+    except Exception:
+        return []
+
+def _load_server_overrides_at_startup():
+    global APP_DISABLED, _server_daily_limit_sec, _server_disabled_override
+    data = _load_json_file(SERVER_OVERRIDES_FILE, {})
+    _server_daily_limit_sec = data.get("daily_limit_sec")
+    _server_disabled_override = data.get("disabled")
+    if _server_disabled_override is not None:
+        APP_DISABLED = bool(_server_disabled_override)
+        log(f"LAN: last known server state is {'DISABLED' if APP_DISABLED else 'ENABLED'}")
+    if _server_daily_limit_sec:
+        log(f"LAN: last known daily limit is {int(_server_daily_limit_sec)//60} min")
+
+def _apply_server_commands(cmd: dict):
+    global APP_DISABLED, _server_daily_limit_sec, _server_disabled_override
+    if not isinstance(cmd, dict):
+        return
+    changed = False
+    if "disabled" in cmd:
+        value = cmd.get("disabled")
+        value = None if value is None else bool(value)
+        if value != _server_disabled_override:
+            _server_disabled_override = value
+            changed = True
+            if value is not None:
+                APP_DISABLED = value
+                try:
+                    with _state_lock:
+                        st = load_state()
+                        st["disabled_date"] = datetime.date.today().isoformat() if value else None
+                        save_state(st)
+                except Exception:
+                    pass
+                log(f"LAN: server {'DISABLED' if value else 'ENABLED'} this PC")
+    if "daily_limit_sec" in cmd:
+        value = cmd.get("daily_limit_sec")
+        try:
+            value = None if value in (None, 0, "", "0") else max(60, int(value))
+        except Exception:
+            value = None
+        if value != _server_daily_limit_sec:
+            _server_daily_limit_sec = value
+            changed = True
+            log(f"LAN: daily limit {'default' if value is None else str(value//60) + ' min'}")
+    if "bonus_seconds" in cmd and cmd.get("bonus_seconds") is not None:
+        try:
+            bonus = max(0, int(cmd["bonus_seconds"]))
+            with _state_lock:
+                st = load_state()
+                if int(st.get("bonus_seconds", 0) or 0) != bonus:
+                    st["bonus_seconds"] = bonus
+                    save_state(st)
+                    changed = True
+                    log(f"LAN: bonus time set to {bonus//60} min")
+        except Exception:
+            pass
+    if cmd.get("exit"):
+        log("LAN: server requested exit")
+        request_shutdown("server exit command")
+    if changed:
+        _save_json_file(SERVER_OVERRIDES_FILE, {
+            "disabled": _server_disabled_override,
+            "daily_limit_sec": _server_daily_limit_sec,
+            "updated": time.time(),
+        })
+
+def lan_heartbeat_once():
+    """Send one status heartbeat to the LAN server and apply its commands."""
+    import urllib.error
+    import urllib.request
+    url = _server_base_url()
+    if not url:
+        return False
+    _, secret = _load_server_config()
+    with _state_lock:
+        state = load_state()
+    payload = {
+        "host": HOSTNAME,
+        "version": __version__,
+        "date": datetime.date.today().isoformat(),
+        "status": build_status(state),
+        "history": load_history(),
+        "logs": _tail_log_lines(LAN_LOG_LINES),
+        "secret": secret,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url + "/api/heartbeat", data=data, method="POST",
+        headers={"Content-Type": "application/json", "X-PlayLimit-Secret": secret},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            obj = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            log_warn("LAN: server rejected the secret - check server.json")
+        raise
+    _apply_server_commands(obj.get("commands") or {})
+    return True
+
+def lan_thread():
+    global _server_url
+    log(f"LAN: heartbeat thread started (every {LAN_HEARTBEAT_EVERY_SEC}s)")
+    failures = 0
+    while not _shutdown.is_set():
+        try:
+            if lan_heartbeat_once():
+                if failures:
+                    log("LAN: server reachable again")
+                failures = 0
+            else:
+                failures += 1
+                if failures in (1, 10, 60):
+                    log_warn("LAN: no server configured/reachable - running local (retrying)")
+        except Exception as e:
+            failures += 1
+            _server_url = None
+            if failures in (1, 10, 60):
+                log_warn(f"LAN: heartbeat failed: {e}")
+        _shutdown.wait(LAN_HEARTBEAT_EVERY_SEC)
+
 # ---------- GITHUB LOG SHIPPING ----------
 # Every running copy periodically uploads its log so the parent PC can read all
 # machines' logs from one place: https://github.com/beukes2/playlimit-logs/tree/master/logs
@@ -1677,8 +1880,8 @@ def add_bonus_time(seconds: int = BONUS_STEP_SEC):
         return state
 
 def hotkey_listener_thread():
-    """Global hotkeys: Ctrl+Alt+T -> +15 min, Ctrl+Alt+D -> toggle disable/re-enable,
-    Ctrl+Shift+D -> disable+exit (or re-enable if already disabled)."""
+    """Disabled: this client has no local hotkeys; PlayLimit Server controls it."""
+    return
     global APP_DISABLED
     try:
         user32 = ctypes.windll.user32
@@ -1781,9 +1984,7 @@ def console_thread():
         log(f" {APP_NAME} v{__version__} - Game Time Limiter (GUI app, all games share one budget)")
         log("=" * 60)
         log(f" Weekday limit: {WEEKDAY_LIMIT_SEC//60} min | Weekend: {WEEKEND_LIMIT_SEC//60} min | Warning: {WARNING_BEFORE_SEC//60} min before")
-        log(f" Hotkey: Ctrl+Shift+I = +15 min for today (resets tomorrow)")
-        log(f" Hotkey: Ctrl+Shift+E = toggle disable/re-enable for today")
-        log(f" Hotkey: Ctrl+Shift+D = disable for today + exit (re-enables if already disabled)")
+        log(f" Control: PlayLimit Server (LAN) - no local hotkeys")
         if is_browser_block_exempt():
             log(f" Browser block: OFF on this PC (exempt) - your browsers will NOT be closed")
         else:
@@ -1817,7 +2018,7 @@ def console_thread():
             gstatus = ("RUNNING: " + ", ".join(games_now[:3])) if running else "not running"
             # Color not needed, plain text
             if is_disabled():
-                line = f"[{ts}] *** DISABLED *** | PlayLimit is OFF | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Games {gstatus} | Browser block OFF | Press Ctrl+Alt+D to re-enable (auto re-enables tomorrow)"
+                line = f"[{ts}] *** DISABLED *** | PlayLimit is OFF | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Games {gstatus} | Browser block OFF | Controlled by PlayLimit Server"
             elif is_browser_block_exempt():
                 line = f"[{ts}] {day_type} | Base {base//60}min + Bonus {bonus//60}min = {limit//60}min | Used {format_minutes(used)} | Left {format_minutes(remaining)} | Games {gstatus} {'(WARNED)' if warned else ''} | Browser OFF (exempt)"
             else:
@@ -1939,15 +2140,9 @@ def show_time_window():
                 pass
             threading.Thread(target=force_update_check, daemon=True).start()
 
-        def on_logs_btn():
-            threading.Thread(target=open_dashboard, daemon=True).start()
-
         tk.Button(btn_frame, text="Update", command=on_update_btn,
                   font=("Segoe UI", 8), bg="#2d2d44", fg="#bbbbbb",
-                  relief="flat", padx=8, pady=1).pack(side="left", padx=(0, 6))
-        tk.Button(btn_frame, text="Logs", command=on_logs_btn,
-                  font=("Segoe UI", 8), bg="#2d2d44", fg="#bbbbbb",
-                  relief="flat", padx=8, pady=1).pack(side="left")
+                  relief="flat", padx=8, pady=1).pack()
 
         # Session history grid (newest top, live session ticks from available data).
         # Read-only labels, updated in place every refresh - safe for kids.
@@ -2052,15 +2247,15 @@ def show_time_window():
 
         # Kids must NOT be able to close the app via X, taskbar Close or Alt+F4.
         # Those all arrive as WM_CLOSE -> ignored here (logged only).
-        # Parent exits via Ctrl+Shift+D hotkey or Task Manager as Admin (TerminateProcess
+        # Parent exits via PlayLimit Server or Task Manager as Admin (TerminateProcess
         # cannot be blocked); both do a full shutdown so no traces are left behind.
-        # Ctrl+Alt+D toggles enforcement for today (app keeps running).
+        # Enable/disable is controlled from PlayLimit Server.
         # Register this root so request_shutdown() can destroy it from hotkeys.
         global _tk_root
         _tk_root = root
 
         def on_close(*args):
-            log("Close attempt blocked (X/taskbar/Alt+F4) - kids cannot close; parent: Ctrl+Shift+D or Task Manager as Admin")
+            log("Close attempt blocked (X/taskbar/Alt+F4) - kids cannot close; parent: use PlayLimit Server or Task Manager as Admin")
 
         try:
             root.protocol("WM_DELETE_WINDOW", on_close)
@@ -2144,7 +2339,7 @@ def tray_thread():
             threading.Thread(target=do_show, daemon=True).start()
 
         # NOTE: no Exit/Disable menu items on purpose - kids would click them.
-        # Parent exits via Ctrl+Shift+D hotkey or Task Manager as Admin.
+        # Parent exits via PlayLimit Server or Task Manager as Admin.
         menu = pystray.Menu(
             item('Show Time Left', on_show, default=True)
         )
@@ -2161,7 +2356,7 @@ def tray_thread():
     try:
         import tkinter as tk
         # This fallback just ensures show_time_window is available via hotkey; no tray
-        log("Tray fallback: use Ctrl+Alt+T / show_time_window() via console")
+        log("Tray fallback: show_time_window() via console (server-controlled)")
         # Keep thread alive
         while True:
             time.sleep(60)
@@ -2407,7 +2602,7 @@ def kill_browsers():
                 killed = True
         if killed:
             try:
-                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nask a parent to press Ctrl+Shift+E to disable.", style=0x10)
+                show_warning_async("Browser Blocked", "Browsing is blocked by PlayLimit.\n\nAsk a parent to use PlayLimit Server.", style=0x10)
             except Exception:
                 pass
         return killed
@@ -2670,7 +2865,7 @@ def main_loop():
         log(f"STATUS: ACTIVE - Browser block OFF on this PC (exempt) | Game limit ON")
     else:
         log(f"STATUS: ACTIVE - Browser block ON ({', '.join(BROWSER_PROCESSES)})")
-    log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Bonus step: {BONUS_STEP_SEC//60} min via Ctrl+Shift+I, Disable/re-enable: Ctrl+Shift+E, Disable+exit: Ctrl+Shift+D")
+    log(f"Weekday limit: {WEEKDAY_LIMIT_SEC//60} min, Weekend: {WEEKEND_LIMIT_SEC//60} min, Warning: {WARNING_BEFORE_SEC//60} min before, Control: PlayLimit Server (LAN)")
     log(f"Watching: {', '.join(TARGET_PROCESSES)}")
     log(f"psutil available: {HAS_PSUTIL}")
 
@@ -2691,13 +2886,7 @@ def main_loop():
     except Exception:
         pass
 
-    # Start hotkey listener (daemon)
-    try:
-        t = threading.Thread(target=hotkey_listener_thread, daemon=True, name="HotkeyListener")
-        t.start()
-        log("Hotkey thread started")
-    except Exception as e:
-        log(f"Failed to start hotkey thread: {e}")
+    # Local hotkeys are disabled: this client is controlled by PlayLimit Server.
 
     # Start console display (updates every 60s with time left)
     try:
@@ -2722,20 +2911,23 @@ def main_loop():
     except Exception as e:
         log(f"Failed to start background update: {e}")
 
-    # Log shipping to GitHub (silent unless parent placed github_token.txt)
-    try:
-        lt = threading.Thread(target=logship_thread, daemon=True, name="LogShip")
-        lt.start()
-        log("LogShip thread started")
-    except Exception as e:
-        log(f"Failed to start logship thread: {e}")
-
     with _state_lock:
         state = load_state()
         save_state(state)
         APP_DISABLED = (state.get("disabled_date") == datetime.date.today().isoformat())
         if APP_DISABLED:
-            log("Startup: disabled for today - press Ctrl+Alt+D to re-enable now (auto re-enables tomorrow)")
+            log("Startup: disabled - controlled by PlayLimit Server")
+
+    # Apply the last server settings before enforcement starts.
+    _load_server_overrides_at_startup()
+
+    # LAN control: heartbeat every 30s to this household's PlayLimit Server.
+    try:
+        lth = threading.Thread(target=lan_thread, daemon=True, name="LAN")
+        lth.start()
+        log("LAN heartbeat thread started")
+    except Exception as e:
+        log(f"Failed to start LAN thread: {e}")
 
     # Write an initial heartbeat so the monitor shows this machine immediately.
     write_status(state, None)
@@ -2784,7 +2976,7 @@ def main_loop():
             if is_disabled():
                 # Still sleep and continue; console will show DISABLED
                 if int(time.time()) % 60 == 0:
-                    log("PlayLimit DISABLED for today - skipping all checks (Ctrl+Alt+D to re-enable; auto re-enables tomorrow)")
+                    log("PlayLimit DISABLED for today - skipping all checks (controlled by PlayLimit Server)")
                 _shutdown.wait(POLL_INTERVAL_SEC)
                 continue
 
@@ -2939,7 +3131,7 @@ def main_loop():
         with _state_lock:
             # The disable hotkey writes disabled_date straight to disk, but the
             # loop's in-memory `state` may predate that write. Re-read the disk
-            # value so a Ctrl+Shift+D shutdown cannot overwrite "disabled today"
+            # value so a server disable cannot be overwritten with "disabled today"
             # with None (which would silently re-enable on the next launch).
             try:
                 state["disabled_date"] = load_state().get("disabled_date")

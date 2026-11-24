@@ -22,7 +22,7 @@ py -m PyInstaller --noconfirm --clean --onefile --noconsole --name PlayLimit `
     --icon playlimit.ico --version-file version_info.txt `
     --distpath build\app --workpath build\pyi --specpath . `
     --hidden-import pystray --hidden-import PIL --hidden-import psutil `
-    --splash splash.png --add-data "monitor/dashboard.html;monitor" albion_limiter.py
+    --splash splash.png albion_limiter.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 $real = "build\app\PlayLimit.exe"
