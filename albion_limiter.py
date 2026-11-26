@@ -20,7 +20,7 @@ import threading
 import collections
 from pathlib import Path
 
-__version__ = "1.8.3"
+__version__ = "1.8.4"
 APP_NAME = "PlayLimit"
 
 # ---------- CONFIG ----------
@@ -47,9 +47,9 @@ GAME_PROCESSES = [
     "minecraftlauncher.exe",
     "minecraft.windows.exe",
     "minecraftbedrock.exe",
-    # Roblox
+    # Roblox: the actual game client only. The Roblox app/launcher being open
+    # (RobloxPlayerLauncher.exe / Roblox.exe) must never count as playtime.
     "robloxplayerbeta.exe",
-    "robloxplayerlauncher.exe",
     # Fortnite / Epic
     "fortniteclient-win64-shipping.exe",
     "fortniteclient-win64-shipping_eac.exe",
@@ -77,7 +77,9 @@ STEAM_HOST_NAMES = ["steam.exe"]
 # counting those would burn the budget while nobody is playing)
 STEAM_ANCESTRY_EXCLUDE = ["qtwebengineprocess.exe", "crashhandler.exe",
                           "crashpad_handler.exe", "crashreporter.exe",
-                          "unitycrashhandler64.exe", "unitycrashhandler.exe"]
+                          "unitycrashhandler64.exe", "unitycrashhandler.exe",
+                          # Steam overlay can be alive while only the client is open
+                          "gameoverlayui.exe", "gameoverlayui64.exe"]
 
 # Browser processes to block (kids not allowed to open any browser)
 BROWSER_PROCESSES = [
@@ -2451,7 +2453,9 @@ def _ancestor_names(proc, max_depth=6):
 
 # Substring hits for the tasklist pass (elevated processes hide cmdline/parents
 # from psutil, but tasklist still shows image names - never java hosts here).
-TASKLIST_GAME_SUBSTRINGS = ["albion", "minecraft", "roblox", "fortnite", "valorant",
+# Exact GAME_PROCESSES names are checked separately; keep only broad substrings
+# that cannot match a launcher/client. ("roblox" would match RobloxPlayerLauncher.)
+TASKLIST_GAME_SUBSTRINGS = ["albion", "minecraft", "fortnite", "valorant",
                             "leagueoflegends", "leagueclient"]
 
 def _tasklist_game_hits(text: str):
