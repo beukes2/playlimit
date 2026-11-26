@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 APP_NAME = "PlayLimit Server"
 APP_VERSION = "1.0.0"
 API_PORT = 8765
+LEGACY_API_PORT = 8767  # old dashboard/config port; keep accepting heartbeats there
 DASHBOARD_PORT = API_PORT  # dashboard and API share one port; dashboard is localhost-only
 DISCOVERY_PORT = 8766
 OFFLINE_AFTER_SEC = 90
@@ -160,6 +161,7 @@ def handle_heartbeat(payload):
         if not machine:
             machine = {"host": host, "first_seen": now, "commands": {}}
             _store["machines"][host] = machine
+            log("new client %s from %s" % (host, payload.get("_source_ip") or "?"))
         commands = machine.setdefault("commands", {})
         if "disabled" not in commands:
             commands["disabled"] = bool(status.get("disabled", False))
@@ -432,6 +434,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 # appear without copying server.json. A wrong non-empty secret is
                 # still rejected. Dashboard/commands are localhost-only regardless.
                 if supplied and supplied != SECRET:
+                    log("heartbeat rejected from %s (bad secret)" % (self.client_address[0] if self.client_address else "?"))
                     self._send(401, {"ok": False, "error": "bad secret"})
                     return
                 commands = handle_heartbeat(payload)
@@ -573,6 +576,13 @@ def main():
     print("Keep this window open. Press Ctrl+C to stop.")
     print("")
     serve(APIHandler, "0.0.0.0", API_PORT, "HTTP")
+    # Backward compatibility: accept heartbeats from clients whose server.json
+    # still points at the old dashboard port 8767.
+    try:
+        serve(APIHandler, "0.0.0.0", LEGACY_API_PORT, "HTTP-legacy")
+        log("legacy API also listening on %d" % LEGACY_API_PORT)
+    except Exception as e:
+        log("legacy API port %d unavailable: %s" % (LEGACY_API_PORT, e))
     threading.Thread(target=discovery_thread, daemon=True, name="Discovery").start()
     try:
         while True:
